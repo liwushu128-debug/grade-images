@@ -9,8 +9,9 @@ Apply operations in this order:
 3. apply source-specific correction;
 4. apply the reusable creative look;
 5. reduce the grade inside protected regions;
-6. compress or clip to the output gamut;
-7. encode once and preserve supported metadata.
+6. after explicit consent only, derive a light mask from original-source luminance and composite bounded low-frequency source glow over the unblurred graded base;
+7. compress or clip to the output gamut;
+8. encode once and preserve supported metadata.
 
 ## Correction versus look
 
@@ -27,6 +28,9 @@ Keep correction source-specific. Exposure and white balance frequently differ ac
 - Apply CDL in linear light. Clamp negative bases before power operations.
 - Scale split toning to the selected intensity while avoiding a uniform global cast. Bold grades may use stronger tonal-zone separation, but correction and look must remain distinct.
 - Preserve source chroma by default for natural styles. Do not treat a high P95 saturation measurement as sufficient reason to lower global saturation; require visible clipping, hue breakage, or fluorescence.
+- Use vibrance when the required saturation ratio differs between muted and already-saturated regions. Its per-pixel factor is strongest at low chroma and approaches neutral at high chroma, reducing fluorescent clipping during bold grades.
+- Before encoding, compress out-of-gamut chroma toward luminance while preserving luminance and hue direction. Prefer this bounded compression over independent channel clipping.
+- Derive source-glow position only from original linear luminance. Use graded RGB for light color, blur only the extracted light layer, and composite with bounded screen-like addition. Never generate a spatial light mask from a prompt alone.
 
 ## Batch consistency
 
@@ -35,5 +39,7 @@ Do not apply identical correction parameters to every image. Estimate a safe bas
 ## Reference matching
 
 Treat reference matching as a comparison of distributions and tonal zones, not literal pixel correspondence. Separate luminance from chroma, cap match strength, and reduce changes in protected skin regions. A reference with a different subject or lighting geometry can guide mood but cannot define a physically exact match.
+
+When median- and P95-saturation ratios differ materially, derive vibrance rather than forcing one global saturation factor. Record the selected chroma control in match diagnostics.
 
 Limit automatic exposure matching to `±strength` EV. This keeps a restrained cross-scene match from inheriting an unrelated reference's day/night exposure level.

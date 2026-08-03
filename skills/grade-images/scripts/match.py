@@ -109,6 +109,17 @@ def derive_match_recipe(
     # can drive already-colorful regions into clipping.
     saturation_ratio = min(median_ratio, p95_ratio)
     saturation = float(np.clip(1.0 + (saturation_ratio - 1.0) * strength, 0.65, 1.35))
+    use_vibrance = abs(median_ratio - p95_ratio) >= 0.15
+    vibrance = 0.0
+    if use_vibrance:
+        desired_median_factor = 1.0 + (median_ratio - 1.0) * strength
+        vibrance = float(
+            np.clip(
+                (desired_median_factor - 1.0) / max(1.0 - source["saturation_median"], 0.1),
+                -1.0,
+                2.0,
+            )
+        )
 
     shadow_color, shadow_delta = _delta_color(source["shadow_color"], reference["shadow_color"])
     highlight_color, highlight_delta = _delta_color(source["highlight_color"], reference["highlight_color"])
@@ -124,7 +135,15 @@ def derive_match_recipe(
     look = recipe.setdefault("look", {})
     look.setdefault("tone_curve", {})["strength"] = round(curve_strength, 6)
     look.setdefault("cdl", {})["saturation"] = 1.0
-    look["saturation"] = round(saturation, 6)
+    if use_vibrance and abs(vibrance) >= 0.05:
+        recipe["schema_version"] = "1.1"
+        look["saturation"] = 1.0
+        look["vibrance"] = round(vibrance, 6)
+        chroma_control = "vibrance"
+    else:
+        look.pop("vibrance", None)
+        look["saturation"] = round(saturation, 6)
+        chroma_control = "saturation"
     look["split_tone"] = {
         "shadows": shadow_color,
         "highlights": highlight_color,
@@ -148,6 +167,8 @@ def derive_match_recipe(
         "saturation_median_ratio": median_ratio,
         "saturation_p95_ratio": p95_ratio,
         "output_saturation": saturation,
+        "chroma_control": chroma_control,
+        "output_vibrance": vibrance if chroma_control == "vibrance" else 0.0,
         "shadow_chroma_delta": shadow_delta,
         "highlight_chroma_delta": highlight_delta,
         "split_tone_strength": split_strength,

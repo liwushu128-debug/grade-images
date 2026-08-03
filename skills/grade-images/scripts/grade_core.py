@@ -23,6 +23,7 @@ TOP_KEYS = {
     "preservation",
     "correction",
     "look",
+    "effects",
     "protection",
     "output",
 }
@@ -73,8 +74,9 @@ def validate_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(recipe, dict):
         raise RecipeError("recipe must be a JSON object")
     _only_keys(recipe, TOP_KEYS, "recipe")
-    if recipe.get("schema_version") != "1.0":
-        raise RecipeError("schema_version must be '1.0'")
+    schema_version = recipe.get("schema_version")
+    if schema_version not in {"1.0", "1.1"}:
+        raise RecipeError("schema_version must be '1.0' or '1.1'")
     if not isinstance(recipe.get("intent", ""), str):
         raise RecipeError("intent must be a string")
 
@@ -101,7 +103,7 @@ def validate_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
         "allow_generative_changes": False,
     }
     if preservation != required_policy:
-        raise RecipeError("v0.1 requires the exact strict preservation policy")
+        raise RecipeError("the exact strict preservation policy is required")
 
     correction = _object(recipe.get("correction"), "correction")
     _only_keys(
@@ -120,7 +122,7 @@ def validate_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
     _triplet(white_balance.get("rgb_gains", [1.0, 1.0, 1.0]), "correction.white_balance.rgb_gains", 0.5, 2.0)
 
     look = _object(recipe.get("look"), "look")
-    _only_keys(look, {"tone_curve", "cdl", "saturation", "split_tone"}, "look")
+    _only_keys(look, {"tone_curve", "cdl", "saturation", "vibrance", "split_tone"}, "look")
     tone_curve = _object(look.get("tone_curve"), "look.tone_curve")
     _only_keys(tone_curve, {"strength"}, "look.tone_curve")
     _number(tone_curve.get("strength", 0.0), "look.tone_curve.strength", -1.0, 1.0)
@@ -131,17 +133,64 @@ def validate_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
     _triplet(cdl.get("power", [1.0, 1.0, 1.0]), "look.cdl.power", 0.25, 4.0)
     cdl_saturation = _number(cdl.get("saturation", 1.0), "look.cdl.saturation", 0.0, 2.0)
     global_saturation = _number(look.get("saturation", 1.0), "look.saturation", 0.0, 2.0)
-    if not math.isclose(cdl_saturation, 1.0) and not math.isclose(global_saturation, 1.0):
-        raise RecipeError(
-            "set only one saturation control away from 1.0; the renderer multiplies "
-            "look.cdl.saturation and look.saturation"
+    vibrance = _number(look.get("vibrance", 0.0), "look.vibrance", -1.0, 2.0)
+    adjusted_chroma_controls = sum(
+        (
+            not math.isclose(cdl_saturation, 1.0),
+            not math.isclose(global_saturation, 1.0),
+            not math.isclose(vibrance, 0.0),
         )
+    )
+    if adjusted_chroma_controls > 1:
+        raise RecipeError(
+            "set only one chroma control: cdl.saturation, saturation, or vibrance"
+        )
+    if not math.isclose(vibrance, 0.0) and schema_version != "1.1":
+        raise RecipeError("look.vibrance requires schema_version '1.1'")
     split = _object(look.get("split_tone"), "look.split_tone")
     _only_keys(split, {"shadows", "highlights", "balance", "strength"}, "look.split_tone")
     _triplet(split.get("shadows", [0.5, 0.5, 0.5]), "look.split_tone.shadows", 0.0, 1.0)
     _triplet(split.get("highlights", [0.5, 0.5, 0.5]), "look.split_tone.highlights", 0.0, 1.0)
     _number(split.get("balance", 0.0), "look.split_tone.balance", -1.0, 1.0)
     _number(split.get("strength", 0.0), "look.split_tone.strength", 0.0, 0.25)
+
+    effects = _object(recipe.get("effects"), "effects")
+    if "effects" in recipe and schema_version != "1.1":
+        raise RecipeError("effects require schema_version '1.1'")
+    _only_keys(effects, {"permission", "selection", "source_glow"}, "effects")
+    source_glow = _object(effects.get("source_glow"), "effects.source_glow")
+    _only_keys(
+        source_glow,
+        {"enabled", "threshold", "knee", "radius_fraction", "strength"},
+        "effects.source_glow",
+    )
+    glow_enabled = source_glow.get("enabled", False)
+    if not isinstance(glow_enabled, bool):
+        raise RecipeError("effects.source_glow.enabled must be boolean")
+    _number(source_glow.get("threshold", 0.65), "effects.source_glow.threshold", 0.25, 0.95)
+    _number(source_glow.get("knee", 0.10), "effects.source_glow.knee", 0.0, 0.30)
+    _number(
+        source_glow.get("radius_fraction", 0.015),
+        "effects.source_glow.radius_fraction",
+        0.001,
+        0.05,
+    )
+    glow_strength = _number(
+        source_glow.get("strength", 0.0),
+        "effects.source_glow.strength",
+        0.0,
+        0.35,
+    )
+    if glow_enabled:
+        if effects.get("permission") != "source-derived":
+            raise RecipeError("enabled source glow requires effects.permission 'source-derived'")
+        if effects.get("selection") != "explicit-user":
+            raise RecipeError("enabled source glow requires explicit user consent")
+        if glow_strength <= 0.0:
+            raise RecipeError("enabled source glow requires positive strength")
+    elif effects:
+        if effects.get("permission") != "none" or effects.get("selection") != "not-required":
+            raise RecipeError("disabled effects must use permission 'none' and selection 'not-required'")
 
     protection = _object(recipe.get("protection"), "protection")
     _only_keys(protection, {"skin"}, "protection")
@@ -159,7 +208,7 @@ def validate_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
     if isinstance(quality, bool) or not isinstance(quality, int) or not 85 <= quality <= 100:
         raise RecipeError("output.quality must be an integer in [85, 100]")
     if output.get("profile", "sRGB") != "sRGB":
-        raise RecipeError("v0.1 output.profile must be sRGB")
+        raise RecipeError("v0.2 output.profile must be sRGB")
     if not isinstance(output.get("preserve_metadata", True), bool):
         raise RecipeError("output.preserve_metadata must be boolean")
     return recipe
@@ -187,6 +236,33 @@ def luminance(linear_rgb: np.ndarray) -> np.ndarray:
 def _apply_saturation(rgb: np.ndarray, factor: float) -> np.ndarray:
     luma = luminance(rgb)[..., None]
     return luma + (rgb - luma) * factor
+
+
+def _apply_vibrance(rgb: np.ndarray, amount: float) -> np.ndarray:
+    maximum = np.max(np.clip(rgb, 0.0, None), axis=2)
+    minimum = np.min(np.clip(rgb, 0.0, None), axis=2)
+    saturation = np.zeros_like(maximum)
+    np.divide(maximum - minimum, maximum, out=saturation, where=maximum > 1e-8)
+    factor = np.clip(1.0 + amount * (1.0 - np.clip(saturation, 0.0, 1.0)), 0.0, 3.0)
+    luma = luminance(rgb)[..., None]
+    return luma + (rgb - luma) * factor[..., None]
+
+
+def _compress_chroma_to_unit_gamut(rgb: np.ndarray) -> tuple[np.ndarray, float]:
+    luma = np.clip(luminance(rgb), 0.0, 1.0)
+    chroma = rgb - luma[..., None]
+    limits = np.ones_like(rgb, dtype=np.float32)
+    positive = chroma > 1e-8
+    negative = chroma < -1e-8
+    safe_encoded_max = 253.0 / 255.0
+    safe_linear_max = ((safe_encoded_max + 0.055) / 1.055) ** 2.4
+    np.divide((safe_linear_max - luma)[..., None], chroma, out=limits, where=positive)
+    negative_limits = np.ones_like(rgb, dtype=np.float32)
+    np.divide(luma[..., None], -chroma, out=negative_limits, where=negative)
+    limits = np.where(negative, negative_limits, limits)
+    scale = np.clip(np.min(limits, axis=2), 0.0, 1.0)
+    compressed = luma[..., None] + chroma * scale[..., None]
+    return compressed, float(np.mean(scale < 0.9999))
 
 
 def _skin_mask(encoded_rgb: np.ndarray) -> np.ndarray:
@@ -255,6 +331,7 @@ def _apply_look(rgb: np.ndarray, look: dict[str, Any]) -> np.ndarray:
     result = np.maximum(result * slope + offset, 0.0) ** power
     result = _apply_saturation(result, float(cdl.get("saturation", 1.0)))
     result = _apply_saturation(result, float(look.get("saturation", 1.0)))
+    result = _apply_vibrance(result, float(look.get("vibrance", 0.0)))
 
     split = look.get("split_tone", {})
     split_strength = float(split.get("strength", 0.0))
@@ -277,14 +354,56 @@ def _apply_look(rgb: np.ndarray, look: dict[str, Any]) -> np.ndarray:
     return result
 
 
+def _blur_float_channel(channel: np.ndarray, radius: float) -> np.ndarray:
+    image = Image.fromarray(np.uint8(np.round(np.clip(channel, 0.0, 1.0) * 255.0)), mode="L")
+    blurred = image.filter(ImageFilter.GaussianBlur(radius=radius))
+    return np.asarray(blurred, dtype=np.float32) / 255.0
+
+
+def _apply_source_glow(
+    base: np.ndarray,
+    source_linear: np.ndarray,
+    options: dict[str, Any],
+) -> tuple[np.ndarray, dict[str, Any]]:
+    if not options.get("enabled", False):
+        return base, {"enabled": False}
+    threshold = float(options.get("threshold", 0.65))
+    knee = float(options.get("knee", 0.10))
+    radius_fraction = float(options.get("radius_fraction", 0.015))
+    strength = float(options.get("strength", 0.0))
+    source_luma = np.clip(luminance(source_linear), 0.0, 1.0)
+    if knee > 0.0:
+        lower = threshold - knee
+        weight = np.clip((source_luma - lower) / (2.0 * knee), 0.0, 1.0)
+        weight = weight * weight * (3.0 - 2.0 * weight)
+    else:
+        weight = (source_luma >= threshold).astype(np.float32)
+    light = np.clip(base, 0.0, 1.0) * weight[..., None]
+    radius = max(0.5, min(base.shape[:2]) * radius_fraction)
+    blurred = np.stack(
+        [_blur_float_channel(light[..., index], radius) for index in range(3)],
+        axis=2,
+    )
+    glow = np.clip(blurred * strength, 0.0, 1.0)
+    result = base + glow * (1.0 - np.clip(base, 0.0, 1.0))
+    diagnostics = {
+        "enabled": True,
+        "source_highlight_fraction": round(float(np.mean(weight > 0.01)), 6),
+        "radius_pixels": round(float(radius), 3),
+        "strength": strength,
+        "peak_added_light": round(float(np.max(glow)), 6),
+    }
+    return result, diagnostics
+
+
 def load_image(path: str | Path, max_size: int | None = None) -> tuple[np.ndarray, np.ndarray | None, dict[str, Any]]:
     with Image.open(path) as source:
         if source.format not in {"JPEG", "PNG"}:
-            raise RecipeError("v0.1 accepts only JPEG and PNG images")
+            raise RecipeError("v0.2 accepts only JPEG and PNG images")
         if getattr(source, "n_frames", 1) != 1:
-            raise RecipeError("v0.1 accepts only single-frame images")
+            raise RecipeError("v0.2 accepts only single-frame images")
         if source.mode in {"I", "I;16", "I;16B", "I;16L", "F"}:
-            raise RecipeError("v0.1 accepts only 8-bit image channels")
+            raise RecipeError("v0.2 accepts only 8-bit image channels")
         embedded_profile = source.info.get("icc_profile")
         info = {
             "source_mode": source.mode,
@@ -333,15 +452,27 @@ def render_array(encoded_rgb: np.ndarray, recipe: dict[str, Any]) -> tuple[np.nd
     looked = _apply_look(corrected, recipe.get("look", {}))
     skin_options = recipe.get("protection", {}).get("skin", {})
     skin_fraction = 0.0
+    protection_amount = None
     if skin_options.get("enabled", False) and float(skin_options.get("strength", 0.0)) > 0:
         mask = _skin_mask(encoded_rgb)
         skin_fraction = float(np.mean(mask > 0.5))
         amount = mask[..., None] * float(skin_options["strength"])
         looked = looked * (1.0 - amount) + corrected * amount
+        protection_amount = amount
+    glow_options = recipe.get("effects", {}).get("source_glow", {})
+    pre_glow = looked
+    looked, glow_diagnostics = _apply_source_glow(looked, original_linear, glow_options)
+    if protection_amount is not None and glow_diagnostics.get("enabled", False):
+        looked = looked * (1.0 - protection_amount) + pre_glow * protection_amount
     if not np.all(np.isfinite(looked)):
         raise RuntimeError("render produced non-finite pixels")
+    looked, gamut_compressed_fraction = _compress_chroma_to_unit_gamut(looked)
     encoded = np.clip(linear_to_srgb(looked), 0.0, 1.0)
-    return encoded, {"skin_fraction": skin_fraction}
+    return encoded, {
+        "skin_fraction": skin_fraction,
+        "source_glow": glow_diagnostics,
+        "gamut_compressed_fraction": round(gamut_compressed_fraction, 6),
+    }
 
 
 def save_image(

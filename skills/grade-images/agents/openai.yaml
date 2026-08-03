@@ -1,4 +1,4 @@
 interface:
   display_name: "Grade Images"
-  short_description: "Analyze and apply reproducible photo color grades"
-  default_prompt: "Use $grade-images to analyze and color-grade these photos without changing structure, identity, or texture. If my desired intensity is unclear, ask me to choose conservative, standard, or bold."
+  short_description: "Reproducible color grades and approved source glow"
+  default_prompt: "Use $grade-images to color-grade these photos, ask before any source-derived glow, and never synthesize lighting or alter scene content."

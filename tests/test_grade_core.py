@@ -19,8 +19,9 @@ sys.path.insert(0, str(SKILL / "scripts"))
 
 import batch as batch_script  # noqa: E402
 import analyze as analyze_script  # noqa: E402
+import compare as compare_script  # noqa: E402
 from batch import derive_batch_recipes  # noqa: E402
-from compare import difference_metrics, gradient_metrics, strategy_warnings  # noqa: E402
+from compare import difference_metrics, gradient_metrics, reference_match_metrics, strategy_warnings  # noqa: E402
 from grade_core import RecipeError, load_image, load_recipe, render_array, save_image, validate_recipe  # noqa: E402
 from match import derive_match_recipe  # noqa: E402
 
@@ -33,6 +34,7 @@ class GradeCoreTests(unittest.TestCase):
         cls.low_light_path = SKILL / "assets" / "recipes" / "low-light-cinematic.json"
         cls.natural_path = SKILL / "assets" / "recipes" / "natural-standard.json"
         cls.bold_path = SKILL / "assets" / "recipes" / "bold-cinematic.json"
+        cls.soft_glow_path = SKILL / "assets" / "recipes" / "soft-dream-source-glow.json"
 
     def test_bundled_recipes_validate(self) -> None:
         load_recipe(self.neutral_path)
@@ -40,13 +42,39 @@ class GradeCoreTests(unittest.TestCase):
         load_recipe(self.low_light_path)
         load_recipe(self.natural_path)
         load_recipe(self.bold_path)
+        load_recipe(self.soft_glow_path)
 
     def test_double_saturation_adjustment_fails_closed(self) -> None:
         recipe = copy.deepcopy(load_recipe(self.neutral_path))
         recipe["look"]["cdl"]["saturation"] = 0.96
         recipe["look"]["saturation"] = 0.96
-        with self.assertRaisesRegex(RecipeError, "only one saturation control"):
+        with self.assertRaisesRegex(RecipeError, "only one chroma control"):
             validate_recipe(recipe)
+
+    def test_vibrance_requires_v11_and_cannot_stack_with_saturation(self) -> None:
+        recipe = copy.deepcopy(load_recipe(self.neutral_path))
+        recipe["look"]["vibrance"] = 1.2
+        with self.assertRaisesRegex(RecipeError, "schema_version"):
+            validate_recipe(recipe)
+        recipe["schema_version"] = "1.1"
+        validate_recipe(recipe)
+        recipe["look"]["saturation"] = 1.1
+        with self.assertRaisesRegex(RecipeError, "only one chroma control"):
+            validate_recipe(recipe)
+
+    def test_positive_vibrance_boosts_muted_color_more_than_saturated_color(self) -> None:
+        recipe = copy.deepcopy(load_recipe(self.neutral_path))
+        recipe["schema_version"] = "1.1"
+        recipe["look"]["vibrance"] = 1.5
+        source = np.zeros((8, 16, 3), dtype=np.float32)
+        source[:, :8] = [0.48, 0.42, 0.38]
+        source[:, 8:] = [0.75, 0.18, 0.10]
+        output, _ = render_array(source, recipe)
+        muted_delta = float(np.mean(np.abs(output[:, :8] - source[:, :8])))
+        saturated_delta = float(np.mean(np.abs(output[:, 8:] - source[:, 8:])))
+        self.assertGreater(muted_delta, 0.0)
+        self.assertGreater(muted_delta, saturated_delta * 0.25)
+        self.assertLess(float(np.mean(output[:, 8:, 0] >= 254.0 / 255.0)), 0.1)
 
     def test_strategy_metadata_is_validated(self) -> None:
         recipe = copy.deepcopy(load_recipe(self.neutral_path))
@@ -60,6 +88,68 @@ class GradeCoreTests(unittest.TestCase):
         recipe["look"]["sharpen"] = 20
         with self.assertRaises(RecipeError):
             validate_recipe(recipe)
+
+    def test_source_glow_requires_v11_and_explicit_user_consent(self) -> None:
+        recipe = copy.deepcopy(load_recipe(self.neutral_path))
+        recipe["effects"] = {
+            "permission": "source-derived",
+            "selection": "inferred",
+            "source_glow": {
+                "enabled": True,
+                "threshold": 0.55,
+                "knee": 0.12,
+                "radius_fraction": 0.02,
+                "strength": 0.12,
+            },
+        }
+        with self.assertRaisesRegex(RecipeError, "schema_version"):
+            validate_recipe(recipe)
+        recipe["schema_version"] = "1.1"
+        with self.assertRaisesRegex(RecipeError, "explicit user consent"):
+            validate_recipe(recipe)
+        recipe["effects"]["selection"] = "explicit-user"
+        validate_recipe(recipe)
+
+    def test_synthetic_light_effects_fail_closed(self) -> None:
+        recipe = copy.deepcopy(load_recipe(self.neutral_path))
+        recipe["schema_version"] = "1.1"
+        recipe["effects"] = {
+            "permission": "source-derived",
+            "selection": "explicit-user",
+            "lens_flare": {"enabled": True},
+        }
+        with self.assertRaisesRegex(RecipeError, "unknown or forbidden"):
+            validate_recipe(recipe)
+
+    def test_source_glow_is_deterministic_and_requires_source_highlights(self) -> None:
+        recipe = copy.deepcopy(load_recipe(self.neutral_path))
+        recipe["schema_version"] = "1.1"
+        recipe["effects"] = {
+            "permission": "source-derived",
+            "selection": "explicit-user",
+            "source_glow": {
+                "enabled": True,
+                "threshold": 0.55,
+                "knee": 0.10,
+                "radius_fraction": 0.025,
+                "strength": 0.16,
+            },
+        }
+        dark = np.full((64, 80, 3), 0.20, dtype=np.float32)
+        dark_output, dark_diag = render_array(dark, recipe)
+        self.assertLess(float(np.max(np.abs(dark_output - dark))), 1e-6)
+        self.assertEqual(dark_diag["source_glow"]["source_highlight_fraction"], 0.0)
+
+        source = dark.copy()
+        source[24:40, 32:48] = 0.95
+        first, first_diag = render_array(source, recipe)
+        second, second_diag = render_array(source, recipe)
+        self.assertTrue(np.array_equal(first, second))
+        self.assertEqual(first_diag, second_diag)
+        self.assertGreater(float(np.mean(first[20:44, 28:52] - source[20:44, 28:52])), 0.0)
+        structure = gradient_metrics(source, first)
+        self.assertGreater(structure["strong_edge_orientation_agreement"], 0.98)
+        self.assertLess(structure["new_strong_edge_fraction"], 0.04)
 
     def test_neutral_round_trip_preserves_decoded_pixels(self) -> None:
         recipe = load_recipe(self.neutral_path)
@@ -129,6 +219,21 @@ class GradeCoreTests(unittest.TestCase):
         )
         self.assertFalse(no_skin["protection"]["skin"]["enabled"])
         self.assertFalse(no_skin_diagnostics["skin_protection_enabled"])
+
+    def test_reference_match_uses_vibrance_for_uneven_chroma_target(self) -> None:
+        template = load_recipe(self.neutral_path)
+        source = np.empty((40, 50, 3), dtype=np.float32)
+        reference = np.empty_like(source)
+        source[:, :40] = [0.50, 0.45, 0.40]
+        source[:, 40:] = [0.80, 0.10, 0.10]
+        reference[:, :40] = [0.70, 0.35, 0.20]
+        reference[:, 40:] = [0.80, 0.10, 0.10]
+        recipe, diagnostics = derive_match_recipe(source, reference, template, strength=0.90)
+        validate_recipe(recipe)
+        self.assertEqual(recipe["schema_version"], "1.1")
+        self.assertEqual(diagnostics["chroma_control"], "vibrance")
+        self.assertGreater(recipe["look"]["vibrance"], 0.0)
+        self.assertEqual(recipe["look"]["saturation"], 1.0)
 
     def test_batch_uses_individual_corrections_and_identical_shared_look(self) -> None:
         template = load_recipe(self.cinematic_path)
@@ -219,6 +324,46 @@ class GradeCoreTests(unittest.TestCase):
         bold = copy.deepcopy(load_recipe(self.bold_path))
         self.assertTrue(any("standard strategy" in item for item in strategy_warnings(standard, difference)))
         self.assertTrue(any("bold strategy" in item for item in strategy_warnings(bold, difference)))
+
+    def test_reference_match_metrics_distinguish_safety_from_target_progress(self) -> None:
+        source = analyze_script.analyze_array(np.full((20, 20, 3), [0.75, 0.72, 0.68], dtype=np.float32))
+        output = analyze_script.analyze_array(np.full((20, 20, 3), [0.55, 0.48, 0.42], dtype=np.float32))
+        reference = analyze_script.analyze_array(np.full((20, 20, 3), [0.35, 0.24, 0.18], dtype=np.float32))
+        metrics = reference_match_metrics(source, output, reference)
+        self.assertGreater(metrics["improvement_fraction"], 0.20)
+        self.assertLess(metrics["output_distribution_distance"], metrics["source_distribution_distance"])
+
+    def test_compare_cli_separates_preservation_from_reference_intent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.png"
+            output = root / "output.png"
+            reference = root / "reference.png"
+            report = root / "report.json"
+            recipe_path = root / "recipe.json"
+            Image.new("RGB", (24, 18), (170, 165, 160)).save(source)
+            Image.new("RGB", (24, 18), (170, 165, 160)).save(output)
+            Image.new("RGB", (24, 18), (45, 35, 30)).save(reference)
+            recipe = copy.deepcopy(load_recipe(self.neutral_path))
+            recipe["protection"]["skin"] = {"enabled": False, "strength": 0.0}
+            recipe_path.write_text(json.dumps(recipe), encoding="utf-8")
+            argv = [
+                "compare.py",
+                str(source),
+                str(output),
+                "--recipe",
+                str(recipe_path),
+                "--reference",
+                str(reference),
+                "--output",
+                str(report),
+            ]
+            with patch.object(sys, "argv", argv):
+                self.assertEqual(compare_script.main(), 0)
+            result = json.loads(report.read_text(encoding="utf-8"))
+            self.assertEqual(result["preservation_status"], "pass")
+            self.assertEqual(result["intent_match_status"], "warn")
+            self.assertTrue(result["intent_warnings"])
 
     def test_bold_template_has_more_visible_delta_than_conservative_template(self) -> None:
         y, x = np.mgrid[0:80, 0:96]

@@ -4,12 +4,13 @@
 
 Every recipe is JSON with these allowed keys:
 
-- `schema_version`: must be `1.0`.
+- `schema_version`: `1.0` for color-only recipes or `1.1` for recipes with controlled effects.
 - `intent`: short human-readable explanation.
 - `strategy`: selected aesthetic strategy and how it was selected.
 - `preservation`: strict execution policy.
 - `correction`: source-specific technical correction.
 - `look`: reusable creative treatment.
+- `effects`: optional, explicitly approved source-derived light diffusion.
 - `protection`: protected-region settings.
 - `output`: encoding settings.
 
@@ -44,7 +45,7 @@ This field records the decision; it does not weaken strict preservation. Legacy 
 }
 ```
 
-All four values are mandatory in v0.1 and must match the example exactly.
+All four values are mandatory in v0.2 and must match the example exactly.
 
 ## Correction
 
@@ -68,6 +69,7 @@ Allowed keys and ranges:
 - `cdl.power`: three values in `0.25..4.0`
 - `cdl.saturation`: `0.0..2.0`
 - `saturation`: `0.0..2.0`
+- `vibrance`: schema 1.1 only, `-1.0..2.0`; positive values affect muted colors more than saturated colors, while negative values create a soft color wash without uniformly crushing strong signature colors.
 - `split_tone.shadows`: RGB triplet in `0.0..1.0`
 - `split_tone.highlights`: RGB triplet in `0.0..1.0`
 - `split_tone.balance`: `-1.0..1.0`
@@ -75,7 +77,32 @@ Allowed keys and ranges:
 
 The renderer applies correction before look.
 
-The renderer multiplies `cdl.saturation` and `saturation`. To prevent an accidental double reduction or boost, set only one of them away from `1.0`; validation rejects recipes that adjust both. Treat natural color as a hue/white-balance goal, not as a request to desaturate.
+Use only one chroma control: `cdl.saturation`, `saturation`, or `vibrance`. Validation rejects stacked controls. Treat natural color as a hue/white-balance goal, not as a request to desaturate.
+
+## Effects
+
+Effects require `schema_version: 1.1`. Omit `effects` for color-only work. An enabled effect must use:
+
+```json
+{
+  "permission": "source-derived",
+  "selection": "explicit-user",
+  "source_glow": {
+    "enabled": true,
+    "threshold": 0.6,
+    "knee": 0.12,
+    "radius_fraction": 0.015,
+    "strength": 0.1
+  }
+}
+```
+
+- `threshold`: source linear-luminance threshold, `0.25..0.95`.
+- `knee`: soft threshold width, `0.0..0.30`.
+- `radius_fraction`: Gaussian radius as a fraction of the shorter image edge, `0.001..0.05`.
+- `strength`: bounded screen-like light addition, `0.0..0.35`; enabled effects require a positive value.
+
+If an `effects` object is present but disabled, it must use `permission: none` and `selection: not-required`. Unknown effects fail validation. Lens flare, rays, starbursts, artificial halos, light-source insertion, overlays, and arbitrary masks have no schema representation and are forbidden.
 
 ## Protection
 

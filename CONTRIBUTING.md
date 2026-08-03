@@ -6,7 +6,9 @@ Thank you for improving `grade-images`.
 
 Changes must preserve the project's central contract: color and tone may change, while geometry, identity, objects, and source texture remain structurally untouched.
 
-Do not add crop, resize, warp, inpainting, generative editing, face restoration, skin smoothing, blur, sharpen, denoise, clarity, grain, or arbitrary executable filter operations to strict mode.
+Do not add crop, resize, warp, inpainting, generative editing, face restoration, skin smoothing, source-image blur, sharpen, denoise, clarity, grain, or arbitrary executable filter operations to strict mode. Synthetic or composited lighting is forbidden, including added light sources, flares, rays, starbursts, halos, reflections, and painted highlights.
+
+The only controlled light effect is explicitly approved source-derived highlight diffusion. Its spatial support must come from input luminance, it may blur only the extracted light layer, and the unblurred graded image must remain the base layer.
 
 ## Development setup
 
@@ -44,4 +46,3 @@ Do not commit private photographs, generated test outputs, local dependency fold
 - `SKILL.md` remains concise and repository documentation stays outside the skill folder.
 
 By submitting a contribution, you agree that it is licensed under Apache-2.0, consistent with the repository license.
-

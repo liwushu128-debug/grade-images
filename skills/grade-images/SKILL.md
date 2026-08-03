@@ -1,6 +1,6 @@
 ---
 name: grade-images
-description: Analyze, correct, match, and batch color-grade JPEG and PNG photographs with a deterministic, non-generative pipeline. Use whenever the user asks to color grade, color correct, fix exposure or white balance, match a reference image's color treatment, make a photo set visually cohesive, create a cinematic or film-like look, or apply a reproducible grade without changing geometry, identity, facial features, objects, or texture.
+description: Analyze, correct, match, and batch color-grade JPEG and PNG photographs with a deterministic, non-generative pipeline, plus explicitly approved source-derived highlight diffusion. Use whenever the user asks to color grade, color correct, fix exposure or white balance, match a reference image, create a cinematic, vivid, dreamy, soft-glow, or film-like look, make a photo set cohesive, or apply reproducible image treatment without changing geometry, identity, facial features, objects, text, or scene content.
 ---
 
 # Grade Images
@@ -13,12 +13,15 @@ Create reproducible photo color grades while preserving spatial structure, ident
 - Default to `preservation.mode: strict`.
 - Keep preservation strict at every aesthetic intensity. Do not confuse structural safety with a weak color grade.
 - Never use a generative image editor for a color-only request.
+- Never synthesize or composite a light source, flare, beam, starburst, halo shape, reflection, or painted highlight.
+- Treat aesthetic intensity and effect permission as independent. `bold` is not consent for an effect.
+- Keep controlled effects absent unless the user explicitly approves source-derived highlight diffusion after being told that it can soften local contrast around existing highlights.
 - Never claim to recover detail that is clipped in an encoded JPEG or PNG.
 - Render a low-resolution preview before a full batch when the requested look is subjective.
 - Save the exact recipe beside every final result.
 - Fail closed when a recipe contains an unknown or texture-changing operation.
 
-Read [preservation.md](references/preservation.md) before rendering. Read [recipe-schema.md](references/recipe-schema.md) before authoring or modifying a recipe. Read [intensity-strategies.md](references/intensity-strategies.md) before interpreting a subjective look or strength request. Read [quality-gates.md](references/quality-gates.md) before accepting final outputs. For color decisions and parameter interpretation, read [color-science.md](references/color-science.md).
+Read [preservation.md](references/preservation.md) before rendering. Read [recipe-schema.md](references/recipe-schema.md) before authoring or modifying a recipe. Read [intensity-strategies.md](references/intensity-strategies.md) before interpreting a subjective look or strength request. Read [controlled-light-effects.md](references/controlled-light-effects.md) whenever the prompt or reference may require glow, diffusion, haze, dreaminess, sacred light, or another optical-light quality. Read [quality-gates.md](references/quality-gates.md) before accepting final outputs. For color decisions and parameter interpretation, read [color-science.md](references/color-science.md).
 
 ## Choose a mode
 
@@ -34,16 +37,18 @@ Do not treat identical parameters as perceptual consistency. For a batch, keep p
 
 1. Locate the skill directory and use its bundled scripts by absolute path.
 2. Require Python 3.10+, Pillow, and NumPy. If unavailable, stop and report the missing dependency; do not silently switch to a generative editor.
-3. Accept single-frame, 8-bit JPEG and PNG in v0.1. Reject animation and higher-bit-depth inputs instead of silently losing frames or precision. Preserve dimensions and alpha structure. Convert a valid embedded ICC profile to the sRGB working/output space; preserve supported EXIF data when requested. Record a warning when an embedded profile is invalid or an untagged CMYK JPEG requires an uncertain default conversion.
+3. Accept single-frame, 8-bit JPEG and PNG in v0.2. Reject animation and higher-bit-depth inputs instead of silently losing frames or precision. Preserve dimensions and alpha structure. Convert a valid embedded ICC profile to the sRGB working/output space; preserve supported EXIF data when requested. Record a warning when an embedded profile is invalid or an untagged CMYK JPEG requires an uncertain default conversion.
 4. Determine whether the user supplied a reference image, a named look, or only a correction request. Separately determine aesthetic intensity: `conservative`, `standard`, or `bold`.
 5. For a subjective look with no clear intensity cue, ask the user to choose conservative, standard, or bold. If no answer is available and continuing is appropriate, use standard and state that choice. Never silently default a subjective look to conservative.
+6. Separately decide whether color and tone can satisfy the request. If controlled diffusion may be needed, ask for effect permission; never infer it from intensity or prior tasks.
 
 ## Interpret intent
 
 - Treat preservation and aesthetic intensity as independent controls. Keep geometry, identity, facial features, objects, and texture protected even for a bold grade.
 - Treat `natural` as a style, not a synonym for low saturation or low intensity. Preserve vivid signature colors unless the preview shows clipping, hue breakage, or fluorescence.
 - Treat `cinematic` as tonal density and controlled color separation, not automatic fading or desaturation.
-- Map explicit phrases such as `保守`, `轻微`, or `克制` to conservative; map `放开调`, `强烈`, `浓郁`, `明显`, `大胆`, or `极致` to bold.
+- Map `保守`, `轻微`, `微调`, `克制`, `subtle`, or `restrained` to conservative. Map `放开调`, `强烈`, `浓郁`, `明显`, `大胆`, `极致`, `bold`, or `dramatic` to bold.
+- Treat `梦境`, `梦幻`, `柔光`, `朦胧`, `辉光`, `光晕`, `发光`, `仙气`, `神性`, `圣洁`, and equivalent phrases as possible effect cues, not effect consent.
 - When the user changes direction, rebuild the creative look from the new intent. Do not retain incompatible assumptions from the previous recipe.
 
 ## Workflow
@@ -60,9 +65,9 @@ Use the measurements as evidence, not as an automatic aesthetic verdict. Inspect
 
 ### 2. Author a recipe
 
-Start from `assets/recipes/neutral-correction.json`, `natural-standard.json`, `muted-cinematic.json`, `bold-cinematic.json`, or the shadow-safe `low-light-cinematic.json`. Keep technical correction and creative look in separate sections. Record the chosen style, intensity, and selection method under `strategy`, and explain subjective decisions under `intent`.
+Start from `assets/recipes/neutral-correction.json`, `natural-standard.json`, `muted-cinematic.json`, `bold-cinematic.json`, or the shadow-safe `low-light-cinematic.json`. After explicit effect consent only, `soft-dream-source-glow.json` is available as a source-derived diffusion starting point. Keep technical correction, creative look, and effects separate. Record the chosen style, intensity, selection method, and effect permission, and explain subjective decisions under `intent`.
 
-Use only one saturation control away from `1.0`. The renderer multiplies `look.cdl.saturation` and `look.saturation`; adjusting both caused unintended desaturation in testing and now fails validation.
+Use only one chroma control: `look.cdl.saturation`, `look.saturation`, or schema 1.1 `look.vibrance`. Prefer vibrance when a strong look must increase muted colors without driving already-saturated colors into clipping. Stacking chroma controls fails validation.
 
 Validate before rendering:
 
@@ -80,6 +85,8 @@ python scripts/match.py SOURCE REFERENCE --template assets/recipes/neutral-corre
 
 Use approximately `0.35`, `0.65`, or `0.90` for conservative, standard, or bold. Inspect the generated diagnostics and preview the recipe. A derived match is a starting point, not an aesthetic ground truth.
 
+Reference matching automatically chooses vibrance instead of global saturation when muted and already-saturated regions require materially different chroma ratios. Continue iterating until `target_match` passes; do not stop merely because structural preservation passes.
+
 ### 3. Render a preview
 
 ```text
@@ -87,6 +94,8 @@ python scripts/grade.py render INPUT --recipe RECIPE.json --output PREVIEW.png -
 ```
 
 Label the preview with the selected style and intensity, then show it beside the original. For subjective or batch work, obtain confirmation before full-resolution rendering. A standard preview should be clearly different at fit-to-screen size; a bold preview should be unmistakably different. If it is not, strengthen the recipe or explain the clipping/gamut limit. Adjust one conceptual dimension at a time, such as warmth, contrast, saturation, or shadow color.
+
+When source glow is enabled, also label the preview `source-derived glow: approved`, inspect it at 100%, and confirm that every bright region traces back to an existing source highlight. Remove the effect if it produces a detached bright shape or obscures important text, facial features, or texture.
 
 ### 4. Render final images
 
@@ -113,12 +122,14 @@ Disable skin protection after visual inspection when the scene contains no peopl
 Run:
 
 ```text
-python scripts/compare.py INPUT OUTPUT --recipe RECIPE.json --output report.json
+python scripts/compare.py INPUT OUTPUT --recipe RECIPE.json --output report.json [--reference REFERENCE]
 ```
 
 Treat a failed hard gate as a failed deliverable. Report warnings about new clipping, JPEG loss, aggressive skin shifts, or uncertain masks. Do not describe a warning as a pass.
 
 Review the `difference` section. For standard or bold strategies, do not accept a low-visual-delta warning merely because structural gates passed. Revise the aesthetic recipe unless a documented technical limit prevents the requested strength.
+
+When a reference is supplied, review `target_match`. A preservation pass is not an aesthetic match. Do not reduce intentional clipping or saturation merely because it is strong when the reference contains the same characteristic within tolerance.
 
 ## Match a reference safely
 

@@ -4,6 +4,8 @@
 
 Keep `preservation.mode: strict` at every intensity. Conservative, standard, and bold describe how far tone and color may move, never whether geometry, identity, objects, facial features, or texture may change.
 
+Intensity never grants effect permission. A conservative or standard dream look may need source-derived diffusion; a bold vivid look may need none. Follow [controlled-light-effects.md](controlled-light-effects.md) when an optical-light quality is implied.
+
 ## Ask or infer
 
 For a subjective `look` request with no clear intensity cue, ask the user to choose:
@@ -32,7 +34,7 @@ Use these as starting ranges, not rigid numeric goals. Scene analysis and clippi
 | Standard | Difference is clear at fit-to-screen size | `0.16..0.36` | `0.95..1.12` | `0.04..0.12` |
 | Bold | Treatment is unmistakable without clipping or fluorescent color | `0.30..0.58` | `0.92..1.22` | `0.09..0.18` |
 
-Use only one saturation control away from `1.0`. The effective saturation is `look.cdl.saturation * look.saturation`; stacking two reductions caused the failed natural-beauty test.
+Use only one chroma control. Prefer `vibrance` for strong enhancement from a muted source or for a soft wash that should retain selected signature colors. Stacking `cdl.saturation`, `saturation`, and `vibrance` fails validation.
 
 ## Interpret styles correctly
 
