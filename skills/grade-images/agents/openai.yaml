@@ -1,0 +1,4 @@
+interface:
+  display_name: "Grade Images"
+  short_description: "Analyze and apply reproducible photo color grades"
+  default_prompt: "Use $grade-images to analyze and color-grade these photos without changing structure, identity, or texture. If my desired intensity is unclear, ask me to choose conservative, standard, or bold."

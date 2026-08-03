@@ -1,0 +1,411 @@
+# SPDX-License-Identifier: Apache-2.0
+from __future__ import annotations
+
+import hashlib
+import io
+import json
+import math
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+from PIL import Image, ImageCms, ImageFilter
+
+
+class RecipeError(ValueError):
+    pass
+
+
+TOP_KEYS = {
+    "schema_version",
+    "intent",
+    "strategy",
+    "preservation",
+    "correction",
+    "look",
+    "protection",
+    "output",
+}
+
+
+def _srgb_profile_bytes() -> bytes:
+    return ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+
+
+def sha256_file(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _object(value: Any, name: str) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise RecipeError(f"{name} must be an object")
+    return value
+
+
+def _only_keys(value: dict[str, Any], allowed: set[str], name: str) -> None:
+    unknown = set(value) - allowed
+    if unknown:
+        raise RecipeError(f"{name} contains unknown or forbidden keys: {sorted(unknown)}")
+
+
+def _number(value: Any, name: str, low: float, high: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RecipeError(f"{name} must be a number")
+    result = float(value)
+    if not math.isfinite(result) or not low <= result <= high:
+        raise RecipeError(f"{name} must be in [{low}, {high}]")
+    return result
+
+
+def _triplet(value: Any, name: str, low: float, high: float) -> list[float]:
+    if not isinstance(value, list) or len(value) != 3:
+        raise RecipeError(f"{name} must contain three numbers")
+    return [_number(item, f"{name}[{index}]", low, high) for index, item in enumerate(value)]
+
+
+def validate_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(recipe, dict):
+        raise RecipeError("recipe must be a JSON object")
+    _only_keys(recipe, TOP_KEYS, "recipe")
+    if recipe.get("schema_version") != "1.0":
+        raise RecipeError("schema_version must be '1.0'")
+    if not isinstance(recipe.get("intent", ""), str):
+        raise RecipeError("intent must be a string")
+
+    strategy = _object(recipe.get("strategy"), "strategy")
+    _only_keys(strategy, {"intensity", "style", "selection"}, "strategy")
+    if strategy:
+        if strategy.get("intensity") not in {"conservative", "standard", "bold"}:
+            raise RecipeError("strategy.intensity must be conservative, standard, or bold")
+        if strategy.get("style") not in {"technical", "natural", "cinematic", "reference", "custom"}:
+            raise RecipeError("strategy.style must be technical, natural, cinematic, reference, or custom")
+        if strategy.get("selection") not in {"explicit", "inferred", "default-standard", "template"}:
+            raise RecipeError("strategy.selection must be explicit, inferred, default-standard, or template")
+
+    preservation = _object(recipe.get("preservation"), "preservation")
+    _only_keys(
+        preservation,
+        {"mode", "allow_geometry_changes", "allow_texture_changes", "allow_generative_changes"},
+        "preservation",
+    )
+    required_policy = {
+        "mode": "strict",
+        "allow_geometry_changes": False,
+        "allow_texture_changes": False,
+        "allow_generative_changes": False,
+    }
+    if preservation != required_policy:
+        raise RecipeError("v0.1 requires the exact strict preservation policy")
+
+    correction = _object(recipe.get("correction"), "correction")
+    _only_keys(
+        correction,
+        {"exposure_ev", "white_balance", "black_point", "white_point", "highlight_rolloff"},
+        "correction",
+    )
+    _number(correction.get("exposure_ev", 0.0), "correction.exposure_ev", -3.0, 3.0)
+    black = _number(correction.get("black_point", 0.0), "correction.black_point", 0.0, 0.2)
+    white = _number(correction.get("white_point", 1.0), "correction.white_point", 0.8, 1.5)
+    if white <= black:
+        raise RecipeError("correction.white_point must exceed black_point")
+    _number(correction.get("highlight_rolloff", 0.0), "correction.highlight_rolloff", 0.0, 1.0)
+    white_balance = _object(correction.get("white_balance"), "correction.white_balance")
+    _only_keys(white_balance, {"rgb_gains"}, "correction.white_balance")
+    _triplet(white_balance.get("rgb_gains", [1.0, 1.0, 1.0]), "correction.white_balance.rgb_gains", 0.5, 2.0)
+
+    look = _object(recipe.get("look"), "look")
+    _only_keys(look, {"tone_curve", "cdl", "saturation", "split_tone"}, "look")
+    tone_curve = _object(look.get("tone_curve"), "look.tone_curve")
+    _only_keys(tone_curve, {"strength"}, "look.tone_curve")
+    _number(tone_curve.get("strength", 0.0), "look.tone_curve.strength", -1.0, 1.0)
+    cdl = _object(look.get("cdl"), "look.cdl")
+    _only_keys(cdl, {"slope", "offset", "power", "saturation"}, "look.cdl")
+    _triplet(cdl.get("slope", [1.0, 1.0, 1.0]), "look.cdl.slope", 0.25, 4.0)
+    _triplet(cdl.get("offset", [0.0, 0.0, 0.0]), "look.cdl.offset", -0.25, 0.25)
+    _triplet(cdl.get("power", [1.0, 1.0, 1.0]), "look.cdl.power", 0.25, 4.0)
+    cdl_saturation = _number(cdl.get("saturation", 1.0), "look.cdl.saturation", 0.0, 2.0)
+    global_saturation = _number(look.get("saturation", 1.0), "look.saturation", 0.0, 2.0)
+    if not math.isclose(cdl_saturation, 1.0) and not math.isclose(global_saturation, 1.0):
+        raise RecipeError(
+            "set only one saturation control away from 1.0; the renderer multiplies "
+            "look.cdl.saturation and look.saturation"
+        )
+    split = _object(look.get("split_tone"), "look.split_tone")
+    _only_keys(split, {"shadows", "highlights", "balance", "strength"}, "look.split_tone")
+    _triplet(split.get("shadows", [0.5, 0.5, 0.5]), "look.split_tone.shadows", 0.0, 1.0)
+    _triplet(split.get("highlights", [0.5, 0.5, 0.5]), "look.split_tone.highlights", 0.0, 1.0)
+    _number(split.get("balance", 0.0), "look.split_tone.balance", -1.0, 1.0)
+    _number(split.get("strength", 0.0), "look.split_tone.strength", 0.0, 0.25)
+
+    protection = _object(recipe.get("protection"), "protection")
+    _only_keys(protection, {"skin"}, "protection")
+    skin = _object(protection.get("skin"), "protection.skin")
+    _only_keys(skin, {"enabled", "strength"}, "protection.skin")
+    if not isinstance(skin.get("enabled", False), bool):
+        raise RecipeError("protection.skin.enabled must be boolean")
+    _number(skin.get("strength", 0.0), "protection.skin.strength", 0.0, 1.0)
+
+    output = _object(recipe.get("output"), "output")
+    _only_keys(output, {"format", "quality", "profile", "preserve_metadata"}, "output")
+    if output.get("format", "png") not in {"png", "jpeg"}:
+        raise RecipeError("output.format must be png or jpeg")
+    quality = output.get("quality", 95)
+    if isinstance(quality, bool) or not isinstance(quality, int) or not 85 <= quality <= 100:
+        raise RecipeError("output.quality must be an integer in [85, 100]")
+    if output.get("profile", "sRGB") != "sRGB":
+        raise RecipeError("v0.1 output.profile must be sRGB")
+    if not isinstance(output.get("preserve_metadata", True), bool):
+        raise RecipeError("output.preserve_metadata must be boolean")
+    return recipe
+
+
+def load_recipe(path: str | Path) -> dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as handle:
+        recipe = json.load(handle)
+    return validate_recipe(recipe)
+
+
+def srgb_to_linear(rgb: np.ndarray) -> np.ndarray:
+    return np.where(rgb <= 0.04045, rgb / 12.92, ((rgb + 0.055) / 1.055) ** 2.4)
+
+
+def linear_to_srgb(rgb: np.ndarray) -> np.ndarray:
+    clipped = np.clip(rgb, 0.0, None)
+    return np.where(clipped <= 0.0031308, 12.92 * clipped, 1.055 * clipped ** (1.0 / 2.4) - 0.055)
+
+
+def luminance(linear_rgb: np.ndarray) -> np.ndarray:
+    return np.sum(linear_rgb * np.array([0.2126, 0.7152, 0.0722], dtype=np.float32), axis=2)
+
+
+def _apply_saturation(rgb: np.ndarray, factor: float) -> np.ndarray:
+    luma = luminance(rgb)[..., None]
+    return luma + (rgb - luma) * factor
+
+
+def _skin_mask(encoded_rgb: np.ndarray) -> np.ndarray:
+    r, g, b = [encoded_rgb[..., index] * 255.0 for index in range(3)]
+    y = 0.299 * r + 0.587 * g + 0.114 * b
+    cb = 128.0 - 0.168736 * r - 0.331264 * g + 0.5 * b
+    cr = 128.0 + 0.5 * r - 0.418688 * g - 0.081312 * b
+
+    def soft_range(values: np.ndarray, low: float, high: float, feather: float) -> np.ndarray:
+        left = np.clip((values - (low - feather)) / feather, 0.0, 1.0)
+        right = np.clip(((high + feather) - values) / feather, 0.0, 1.0)
+        return np.minimum(left, right)
+
+    confidence = soft_range(cb, 77.0, 127.0, 12.0) * soft_range(cr, 133.0, 173.0, 12.0)
+    confidence *= np.clip((y - 25.0) / 35.0, 0.0, 1.0)
+    confidence *= np.clip((r - b + 15.0) / 45.0, 0.0, 1.0)
+    mask_image = Image.fromarray(np.uint8(np.clip(confidence, 0.0, 1.0) * 255), mode="L")
+    radius = max(1.0, min(encoded_rgb.shape[:2]) * 0.002)
+    return np.asarray(mask_image.filter(ImageFilter.GaussianBlur(radius=radius)), dtype=np.float32) / 255.0
+
+
+def _apply_correction(rgb: np.ndarray, correction: dict[str, Any]) -> np.ndarray:
+    result = rgb * (2.0 ** float(correction.get("exposure_ev", 0.0)))
+    gains = np.asarray(correction.get("white_balance", {}).get("rgb_gains", [1.0, 1.0, 1.0]), dtype=np.float32)
+    gains /= float(np.prod(gains) ** (1.0 / 3.0))
+    result = result * gains
+    black = float(correction.get("black_point", 0.0))
+    white = float(correction.get("white_point", 1.0))
+    source_luma = np.maximum(luminance(result), 0.0)
+    mapped_luma = np.clip((source_luma - black) / (white - black), 0.0, None)
+    rolloff = float(correction.get("highlight_rolloff", 0.0))
+    if rolloff:
+        threshold = 0.55
+        normalized = np.clip((mapped_luma - threshold) / (1.0 - threshold), 0.0, None)
+        shaped = normalized / (1.0 + rolloff * normalized)
+        mapped_luma = np.where(
+            mapped_luma > threshold,
+            threshold + (1.0 - threshold) * shaped,
+            mapped_luma,
+        )
+    # Scale all channels together so black/white mapping and highlight rolloff
+    # change luminance without introducing colored channel clipping.
+    scale = np.divide(mapped_luma, source_luma, out=np.zeros_like(mapped_luma), where=source_luma > 1e-8)
+    result = result * scale[..., None]
+    return result
+
+
+def _apply_look(rgb: np.ndarray, look: dict[str, Any]) -> np.ndarray:
+    result = rgb.copy()
+    curve_strength = float(look.get("tone_curve", {}).get("strength", 0.0))
+    if curve_strength > 0:
+        clipped = np.clip(result, 0.0, 1.0)
+        smooth = clipped * clipped * (3.0 - 2.0 * clipped)
+        result = result * (1.0 - curve_strength) + smooth * curve_strength
+    elif curve_strength < 0:
+        amount = -curve_strength
+        clipped = np.clip(result, 0.0, 1.0)
+        centered = 2.0 * clipped - 1.0
+        softened = 0.5 + 0.5 * centered * np.abs(centered)
+        result = result * (1.0 - amount) + softened * amount
+
+    cdl = look.get("cdl", {})
+    slope = np.asarray(cdl.get("slope", [1.0, 1.0, 1.0]), dtype=np.float32)
+    offset = np.asarray(cdl.get("offset", [0.0, 0.0, 0.0]), dtype=np.float32)
+    power = np.asarray(cdl.get("power", [1.0, 1.0, 1.0]), dtype=np.float32)
+    result = np.maximum(result * slope + offset, 0.0) ** power
+    result = _apply_saturation(result, float(cdl.get("saturation", 1.0)))
+    result = _apply_saturation(result, float(look.get("saturation", 1.0)))
+
+    split = look.get("split_tone", {})
+    split_strength = float(split.get("strength", 0.0))
+    if split_strength:
+        luma = np.clip(luminance(result), 0.0, 1.0)
+        balance = float(split.get("balance", 0.0))
+        pivot = 0.5 + 0.25 * balance
+        shadow_weight = np.clip((pivot - luma) / max(pivot, 1e-6), 0.0, 1.0) ** 2
+        highlight_weight = np.clip((luma - pivot) / max(1.0 - pivot, 1e-6), 0.0, 1.0) ** 2
+        shadow_color = srgb_to_linear(np.asarray(split.get("shadows", [0.5, 0.5, 0.5]), dtype=np.float32))
+        highlight_color = srgb_to_linear(np.asarray(split.get("highlights", [0.5, 0.5, 0.5]), dtype=np.float32))
+        weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+        shadow_chroma = shadow_color - float(np.dot(shadow_color, weights))
+        highlight_chroma = highlight_color - float(np.dot(highlight_color, weights))
+        # Fade chroma to zero near numeric black and white. Adding color to an
+        # almost-black pixel creates saturated artifacts even at low strength.
+        gamut_gate = np.clip(luma / 0.08, 0.0, 1.0) * np.clip((1.0 - luma) / 0.08, 0.0, 1.0)
+        result += split_strength * gamut_gate[..., None] * shadow_weight[..., None] * shadow_chroma
+        result += split_strength * gamut_gate[..., None] * highlight_weight[..., None] * highlight_chroma
+    return result
+
+
+def load_image(path: str | Path, max_size: int | None = None) -> tuple[np.ndarray, np.ndarray | None, dict[str, Any]]:
+    with Image.open(path) as source:
+        if source.format not in {"JPEG", "PNG"}:
+            raise RecipeError("v0.1 accepts only JPEG and PNG images")
+        if getattr(source, "n_frames", 1) != 1:
+            raise RecipeError("v0.1 accepts only single-frame images")
+        if source.mode in {"I", "I;16", "I;16B", "I;16L", "F"}:
+            raise RecipeError("v0.1 accepts only 8-bit image channels")
+        embedded_profile = source.info.get("icc_profile")
+        info = {
+            "source_mode": source.mode,
+            "source_size": source.size,
+            "source_icc_present": embedded_profile is not None,
+            "working_profile": "sRGB",
+            "color_management": "assumed_srgb",
+            "warnings": [],
+            "output_icc_profile": _srgb_profile_bytes(),
+            "exif": source.getexif().tobytes() if source.getexif() else None,
+        }
+        has_alpha = source.mode in {"RGBA", "LA"} or "transparency" in source.info
+        alpha_image = source.convert("RGBA").getchannel("A") if has_alpha else None
+        image = source.convert("RGB")
+        if embedded_profile:
+            try:
+                profile_source = source.copy() if source.mode in {"RGB", "CMYK", "LAB", "L"} else image
+                image = ImageCms.profileToProfile(
+                    profile_source,
+                    ImageCms.ImageCmsProfile(io.BytesIO(embedded_profile)),
+                    ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")),
+                    outputMode="RGB",
+                )
+                info["color_management"] = "converted_embedded_icc_to_srgb"
+            except (ImageCms.PyCMSError, OSError, TypeError, ValueError) as error:
+                info["color_management"] = "invalid_icc_assumed_srgb"
+                info["warnings"].append(f"embedded ICC profile could not be decoded; assumed sRGB: {error}")
+        elif source.mode == "CMYK":
+            info["color_management"] = "untagged_cmyk_converted_to_rgb"
+            info["warnings"].append("untagged CMYK JPEG was converted with Pillow defaults; color interpretation is uncertain")
+        if max_size and max(image.size) > max_size:
+            image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+            if alpha_image is not None:
+                alpha_image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+        array = np.asarray(image, dtype=np.float32) / 255.0
+        alpha = None
+        if alpha_image is not None:
+            alpha = np.asarray(alpha_image, dtype=np.float32)[..., None] / 255.0
+    return array, alpha, info
+
+
+def render_array(encoded_rgb: np.ndarray, recipe: dict[str, Any]) -> tuple[np.ndarray, dict[str, Any]]:
+    validate_recipe(recipe)
+    original_linear = srgb_to_linear(encoded_rgb)
+    corrected = _apply_correction(original_linear, recipe.get("correction", {}))
+    looked = _apply_look(corrected, recipe.get("look", {}))
+    skin_options = recipe.get("protection", {}).get("skin", {})
+    skin_fraction = 0.0
+    if skin_options.get("enabled", False) and float(skin_options.get("strength", 0.0)) > 0:
+        mask = _skin_mask(encoded_rgb)
+        skin_fraction = float(np.mean(mask > 0.5))
+        amount = mask[..., None] * float(skin_options["strength"])
+        looked = looked * (1.0 - amount) + corrected * amount
+    if not np.all(np.isfinite(looked)):
+        raise RuntimeError("render produced non-finite pixels")
+    encoded = np.clip(linear_to_srgb(looked), 0.0, 1.0)
+    return encoded, {"skin_fraction": skin_fraction}
+
+
+def save_image(
+    path: str | Path,
+    encoded_rgb: np.ndarray,
+    alpha: np.ndarray | None,
+    recipe: dict[str, Any],
+    metadata: dict[str, Any],
+) -> None:
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output_options = recipe.get("output", {})
+    expected = output_options.get("format", "png")
+    suffix = output.suffix.lower()
+    if expected == "png" and suffix != ".png":
+        raise RecipeError("PNG recipe requires a .png output path")
+    if expected == "jpeg" and suffix not in {".jpg", ".jpeg"}:
+        raise RecipeError("JPEG recipe requires a .jpg or .jpeg output path")
+    rgb8 = np.uint8(np.round(np.clip(encoded_rgb, 0.0, 1.0) * 255.0))
+    if alpha is not None:
+        alpha8 = np.uint8(np.round(np.clip(alpha, 0.0, 1.0) * 255.0))
+        array = np.concatenate([rgb8, alpha8], axis=2)
+        image = Image.fromarray(array, mode="RGBA")
+    else:
+        image = Image.fromarray(rgb8, mode="RGB")
+    save_args: dict[str, Any] = {}
+    # Pixel values are always encoded as sRGB, so the output profile must be
+    # sRGB too. Reattaching a non-sRGB source profile would reinterpret them.
+    save_args["icc_profile"] = metadata.get("output_icc_profile") or _srgb_profile_bytes()
+    if output_options.get("preserve_metadata", True):
+        if metadata.get("exif"):
+            save_args["exif"] = metadata["exif"]
+    if expected == "jpeg":
+        if image.mode == "RGBA":
+            raise RecipeError("JPEG output cannot preserve alpha; choose PNG")
+        save_args.update(quality=int(output_options.get("quality", 95)), subsampling=0, optimize=True)
+        image.save(output, format="JPEG", **save_args)
+    else:
+        image.save(output, format="PNG", compress_level=6, **save_args)
+
+
+def analyze_array(encoded_rgb: np.ndarray) -> dict[str, Any]:
+    linear = srgb_to_linear(encoded_rgb)
+    luma = luminance(linear)
+    maximum = np.max(encoded_rgb, axis=2)
+    minimum = np.min(encoded_rgb, axis=2)
+    saturation = np.zeros_like(maximum)
+    np.divide(maximum - minimum, maximum, out=saturation, where=maximum > 1e-6)
+    skin = _skin_mask(encoded_rgb)
+    return {
+        "channel_mean_srgb": [round(float(value), 6) for value in np.mean(encoded_rgb, axis=(0, 1))],
+        "luminance_percentiles_linear": {
+            str(percentile): round(float(np.percentile(luma, percentile)), 6)
+            for percentile in (1, 5, 50, 95, 99)
+        },
+        "clipping": {
+            "near_black_fraction": round(float(np.mean(luma <= 1.0 / 255.0)), 6),
+            "near_white_fraction": round(float(np.mean(luma >= 254.0 / 255.0)), 6),
+            "any_channel_high_fraction": round(float(np.mean(np.any(encoded_rgb >= 254.0 / 255.0, axis=2))), 6),
+        },
+        "saturation": {
+            "median": round(float(np.median(saturation)), 6),
+            "p95": round(float(np.percentile(saturation, 95)), 6),
+            "extreme_fraction": round(float(np.mean(saturation >= 0.98)), 6),
+        },
+        "skin_candidate_fraction": round(float(np.mean(skin > 0.5)), 6),
+    }

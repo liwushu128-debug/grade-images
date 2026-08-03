@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+Thumbs.db
+.venv/
+.pytest_cache/
+build/
+dist/
+.test-artifacts/
+.validation-deps/
+.validator-libs/
+.validator-runtime/
