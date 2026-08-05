@@ -44,7 +44,9 @@ def _percentile_zone_color(encoded_rgb: np.ndarray, linear_luma: np.ndarray, low
 def image_match_stats(encoded_rgb: np.ndarray) -> dict[str, Any]:
     linear = srgb_to_linear(encoded_rgb)
     luma = luminance(linear)
-    low, median, high = [float(value) for value in np.percentile(luma, [5, 50, 95])]
+    low, lower_mid, median, upper_mid, high = [
+        float(value) for value in np.percentile(luma, [5, 25, 50, 75, 95])
+    ]
     valid = (luma >= low) & (luma <= high)
     channel_mean = np.mean(linear[valid], axis=0) if np.any(valid) else np.mean(linear, axis=(0, 1))
     maximum = np.max(encoded_rgb, axis=2)
@@ -52,11 +54,23 @@ def image_match_stats(encoded_rgb: np.ndarray) -> dict[str, Any]:
     saturation = np.zeros_like(maximum)
     np.divide(maximum - minimum, maximum, out=saturation, where=maximum > 1e-6)
     return {
-        "luma": {"p05": low, "p50": median, "p95": high, "range": max(high - low, 1e-6)},
+        "luma": {
+            "p05": low,
+            "p25": lower_mid,
+            "p50": median,
+            "p75": upper_mid,
+            "p95": high,
+            "range": max(high - low, 1e-6),
+            "shadow_span": max(median - low, 1e-6),
+            "highlight_span": max(high - median, 1e-6),
+        },
         "balance": _geometric_normalize(channel_mean),
+        "saturation_p25": float(np.percentile(saturation, 25)),
         "saturation_median": float(np.median(saturation)),
+        "saturation_p75": float(np.percentile(saturation, 75)),
         "saturation_p95": float(np.percentile(saturation, 95)),
         "shadow_color": _percentile_zone_color(encoded_rgb, luma, 8, 32),
+        "midtone_color": _percentile_zone_color(encoded_rgb, luma, 34, 66),
         "highlight_color": _percentile_zone_color(encoded_rgb, luma, 68, 92),
     }
 
@@ -102,14 +116,24 @@ def derive_match_recipe(
     gains = bounded_geometric_normalize(gains, 0.8, 1.25)
 
     contrast_ratio = reference["luma"]["range"] / source["luma"]["range"]
-    curve_strength = float(np.clip(math.log2(max(contrast_ratio, 1e-6)) * 0.35 * strength, -0.6, 0.6))
-    median_ratio = reference["saturation_median"] / max(source["saturation_median"], 0.05)
-    p95_ratio = reference["saturation_p95"] / max(source["saturation_p95"], 0.05)
-    # Use the more conservative distribution target. Matching only the median
-    # can drive already-colorful regions into clipping.
-    saturation_ratio = min(median_ratio, p95_ratio)
+    shadow_span_ratio = reference["luma"]["shadow_span"] / source["luma"]["shadow_span"]
+    highlight_span_ratio = reference["luma"]["highlight_span"] / source["luma"]["highlight_span"]
+    zone_contrast_log = float(np.median(np.log2(np.clip(
+        [contrast_ratio, shadow_span_ratio, highlight_span_ratio], 1e-6, None
+    ))))
+    curve_strength = float(np.clip(zone_contrast_log * 0.38 * strength, -0.6, 0.6))
+    highlight_compression = max(0.0, math.log2(max(shadow_span_ratio, 1e-6) / max(highlight_span_ratio, 1e-6)))
+    saturation_ratios = np.asarray([
+        reference["saturation_p25"] / max(source["saturation_p25"], 0.05),
+        reference["saturation_median"] / max(source["saturation_median"], 0.05),
+        reference["saturation_p75"] / max(source["saturation_p75"], 0.05),
+        reference["saturation_p95"] / max(source["saturation_p95"], 0.05),
+    ], dtype=np.float64)
+    median_ratio = float(saturation_ratios[1])
+    p95_ratio = float(saturation_ratios[3])
+    saturation_ratio = float(np.median(saturation_ratios))
     saturation = float(np.clip(1.0 + (saturation_ratio - 1.0) * strength, 0.65, 1.35))
-    use_vibrance = abs(median_ratio - p95_ratio) >= 0.15
+    use_vibrance = float(np.max(saturation_ratios) - np.min(saturation_ratios)) >= 0.15
     vibrance = 0.0
     if use_vibrance:
         desired_median_factor = 1.0 + (median_ratio - 1.0) * strength
@@ -132,6 +156,10 @@ def derive_match_recipe(
     correction = recipe.setdefault("correction", {})
     correction["exposure_ev"] = round(float(correction.get("exposure_ev", 0.0)) + exposure, 6)
     correction.setdefault("white_balance", {})["rgb_gains"] = [round(float(value), 6) for value in gains]
+    base_rolloff = float(correction.get("highlight_rolloff", 0.0))
+    correction["highlight_rolloff"] = round(
+        float(np.clip(base_rolloff + highlight_compression * 0.16 * strength, 0.0, 1.0)), 6
+    )
     look = recipe.setdefault("look", {})
     look.setdefault("tone_curve", {})["strength"] = round(curve_strength, 6)
     look.setdefault("cdl", {})["saturation"] = 1.0
@@ -162,8 +190,12 @@ def derive_match_recipe(
         "exposure_limit_ev": strength,
         "white_balance_rgb_gains": [float(value) for value in gains],
         "contrast_ratio": contrast_ratio,
+        "shadow_span_ratio": shadow_span_ratio,
+        "highlight_span_ratio": highlight_span_ratio,
+        "highlight_compression_added": correction["highlight_rolloff"] - base_rolloff,
         "tone_curve_strength": curve_strength,
         "saturation_ratio": saturation_ratio,
+        "saturation_distribution_ratios": [float(value) for value in saturation_ratios],
         "saturation_median_ratio": median_ratio,
         "saturation_p95_ratio": p95_ratio,
         "output_saturation": saturation,

@@ -25,6 +25,7 @@ TOP_KEYS = {
     "look",
     "effects",
     "protection",
+    "quality_tolerances",
     "output",
 }
 
@@ -75,16 +76,18 @@ def validate_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
         raise RecipeError("recipe must be a JSON object")
     _only_keys(recipe, TOP_KEYS, "recipe")
     schema_version = recipe.get("schema_version")
-    if schema_version not in {"1.0", "1.1"}:
-        raise RecipeError("schema_version must be '1.0' or '1.1'")
+    if schema_version not in {"1.0", "1.1", "1.2"}:
+        raise RecipeError("schema_version must be '1.0', '1.1', or '1.2'")
     if not isinstance(recipe.get("intent", ""), str):
         raise RecipeError("intent must be a string")
 
     strategy = _object(recipe.get("strategy"), "strategy")
     _only_keys(strategy, {"intensity", "style", "selection"}, "strategy")
     if strategy:
-        if strategy.get("intensity") not in {"conservative", "standard", "bold"}:
-            raise RecipeError("strategy.intensity must be conservative, standard, or bold")
+        if strategy.get("intensity") not in {"conservative", "standard", "bold", "transformative"}:
+            raise RecipeError(
+                "strategy.intensity must be conservative, standard, bold, or transformative"
+            )
         if strategy.get("style") not in {"technical", "natural", "cinematic", "reference", "custom"}:
             raise RecipeError("strategy.style must be technical, natural, cinematic, reference, or custom")
         if strategy.get("selection") not in {"explicit", "inferred", "default-standard", "template"}:
@@ -122,7 +125,11 @@ def validate_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
     _triplet(white_balance.get("rgb_gains", [1.0, 1.0, 1.0]), "correction.white_balance.rgb_gains", 0.5, 2.0)
 
     look = _object(recipe.get("look"), "look")
-    _only_keys(look, {"tone_curve", "cdl", "saturation", "vibrance", "split_tone"}, "look")
+    _only_keys(
+        look,
+        {"tone_curve", "cdl", "saturation", "vibrance", "split_tone", "hue_ranges"},
+        "look",
+    )
     tone_curve = _object(look.get("tone_curve"), "look.tone_curve")
     _only_keys(tone_curve, {"strength"}, "look.tone_curve")
     _number(tone_curve.get("strength", 0.0), "look.tone_curve.strength", -1.0, 1.0)
@@ -145,8 +152,8 @@ def validate_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
         raise RecipeError(
             "set only one chroma control: cdl.saturation, saturation, or vibrance"
         )
-    if not math.isclose(vibrance, 0.0) and schema_version != "1.1":
-        raise RecipeError("look.vibrance requires schema_version '1.1'")
+    if not math.isclose(vibrance, 0.0) and schema_version not in {"1.1", "1.2"}:
+        raise RecipeError("look.vibrance requires schema_version '1.1' or '1.2'")
     split = _object(look.get("split_tone"), "look.split_tone")
     _only_keys(split, {"shadows", "highlights", "balance", "strength"}, "look.split_tone")
     _triplet(split.get("shadows", [0.5, 0.5, 0.5]), "look.split_tone.shadows", 0.0, 1.0)
@@ -154,9 +161,57 @@ def validate_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
     _number(split.get("balance", 0.0), "look.split_tone.balance", -1.0, 1.0)
     _number(split.get("strength", 0.0), "look.split_tone.strength", 0.0, 0.25)
 
+    hue_ranges = look.get("hue_ranges", [])
+    if not isinstance(hue_ranges, list):
+        raise RecipeError("look.hue_ranges must be an array")
+    if hue_ranges and schema_version != "1.2":
+        raise RecipeError("look.hue_ranges requires schema_version '1.2'")
+    if len(hue_ranges) > 8:
+        raise RecipeError("look.hue_ranges supports at most 8 ranges")
+    for index, value in enumerate(hue_ranges):
+        name = f"look.hue_ranges[{index}]"
+        item = _object(value, name)
+        _only_keys(
+            item,
+            {
+                "label",
+                "center_degrees",
+                "width_degrees",
+                "feather_degrees",
+                "hue_shift_degrees",
+                "saturation_scale",
+                "luminance_scale",
+                "saturation_range",
+                "luminance_range",
+                "range_feather",
+                "strength",
+            },
+            name,
+        )
+        if "label" in item and not isinstance(item["label"], str):
+            raise RecipeError(f"{name}.label must be a string")
+        _number(item.get("center_degrees"), f"{name}.center_degrees", 0.0, 360.0)
+        width = _number(item.get("width_degrees"), f"{name}.width_degrees", 1.0, 180.0)
+        feather = _number(item.get("feather_degrees", 0.0), f"{name}.feather_degrees", 0.0, 90.0)
+        if feather > width:
+            raise RecipeError(f"{name}.feather_degrees must not exceed width_degrees")
+        _number(item.get("hue_shift_degrees", 0.0), f"{name}.hue_shift_degrees", -180.0, 180.0)
+        _number(item.get("saturation_scale", 1.0), f"{name}.saturation_scale", 0.0, 2.0)
+        _number(item.get("luminance_scale", 1.0), f"{name}.luminance_scale", 0.25, 2.0)
+        for field in ("saturation_range", "luminance_range"):
+            bounds = item.get(field, [0.0, 1.0])
+            if not isinstance(bounds, list) or len(bounds) != 2:
+                raise RecipeError(f"{name}.{field} must contain two numbers")
+            low = _number(bounds[0], f"{name}.{field}[0]", 0.0, 1.0)
+            high = _number(bounds[1], f"{name}.{field}[1]", 0.0, 1.0)
+            if high <= low:
+                raise RecipeError(f"{name}.{field}[1] must exceed {field}[0]")
+        _number(item.get("range_feather", 0.05), f"{name}.range_feather", 0.0, 0.25)
+        _number(item.get("strength", 1.0), f"{name}.strength", 0.0, 1.0)
+
     effects = _object(recipe.get("effects"), "effects")
-    if "effects" in recipe and schema_version != "1.1":
-        raise RecipeError("effects require schema_version '1.1'")
+    if "effects" in recipe and schema_version not in {"1.1", "1.2"}:
+        raise RecipeError("effects require schema_version '1.1' or '1.2'")
     _only_keys(effects, {"permission", "selection", "source_glow"}, "effects")
     source_glow = _object(effects.get("source_glow"), "effects.source_glow")
     _only_keys(
@@ -200,6 +255,27 @@ def validate_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
         raise RecipeError("protection.skin.enabled must be boolean")
     _number(skin.get("strength", 0.0), "protection.skin.strength", 0.0, 1.0)
 
+    quality_tolerances = _object(recipe.get("quality_tolerances"), "quality_tolerances")
+    _only_keys(
+        quality_tolerances,
+        {"intentional_near_black_increase", "reason"},
+        "quality_tolerances",
+    )
+    intentional_black = _number(
+        quality_tolerances.get("intentional_near_black_increase", 0.0),
+        "quality_tolerances.intentional_near_black_increase",
+        0.0,
+        0.25,
+    )
+    if intentional_black > 0.0:
+        if schema_version != "1.2":
+            raise RecipeError("nonzero quality tolerances require schema_version '1.2'")
+        if strategy.get("intensity") != "transformative":
+            raise RecipeError("near-black intent tolerance is limited to transformative strategy")
+        reason = quality_tolerances.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            raise RecipeError("nonzero quality tolerance requires a reason")
+
     output = _object(recipe.get("output"), "output")
     _only_keys(output, {"format", "quality", "profile", "preserve_metadata"}, "output")
     if output.get("format", "png") not in {"png", "jpeg"}:
@@ -208,7 +284,7 @@ def validate_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
     if isinstance(quality, bool) or not isinstance(quality, int) or not 85 <= quality <= 100:
         raise RecipeError("output.quality must be an integer in [85, 100]")
     if output.get("profile", "sRGB") != "sRGB":
-        raise RecipeError("v0.2 output.profile must be sRGB")
+        raise RecipeError("v0.3 output.profile must be sRGB")
     if not isinstance(output.get("preserve_metadata", True), bool):
         raise RecipeError("output.preserve_metadata must be boolean")
     return recipe
@@ -246,6 +322,89 @@ def _apply_vibrance(rgb: np.ndarray, amount: float) -> np.ndarray:
     factor = np.clip(1.0 + amount * (1.0 - np.clip(saturation, 0.0, 1.0)), 0.0, 3.0)
     luma = luminance(rgb)[..., None]
     return luma + (rgb - luma) * factor[..., None]
+
+
+def _rgb_to_hsv(rgb: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Vectorized HSV conversion for encoded sRGB values in [0, 1]."""
+    clipped = np.clip(rgb, 0.0, 1.0)
+    maximum = np.max(clipped, axis=2)
+    minimum = np.min(clipped, axis=2)
+    delta = maximum - minimum
+    saturation = np.divide(delta, maximum, out=np.zeros_like(delta), where=maximum > 1e-8)
+    hue = np.zeros_like(maximum)
+    valid = delta > 1e-8
+    red = valid & (maximum == clipped[..., 0])
+    green = valid & (maximum == clipped[..., 1])
+    blue = valid & (maximum == clipped[..., 2])
+    hue[red] = np.mod((clipped[..., 1][red] - clipped[..., 2][red]) / delta[red], 6.0)
+    hue[green] = (clipped[..., 2][green] - clipped[..., 0][green]) / delta[green] + 2.0
+    hue[blue] = (clipped[..., 0][blue] - clipped[..., 1][blue]) / delta[blue] + 4.0
+    return np.mod(hue / 6.0, 1.0), saturation, maximum
+
+
+def _hsv_to_rgb(hue: np.ndarray, saturation: np.ndarray, value: np.ndarray) -> np.ndarray:
+    hue6 = np.mod(hue, 1.0) * 6.0
+    sector = np.floor(hue6).astype(np.int32)
+    fraction = hue6 - np.floor(hue6)
+    p = value * (1.0 - saturation)
+    q = value * (1.0 - saturation * fraction)
+    t = value * (1.0 - saturation * (1.0 - fraction))
+    choices = (
+        np.stack((value, t, p), axis=2),
+        np.stack((q, value, p), axis=2),
+        np.stack((p, value, t), axis=2),
+        np.stack((p, q, value), axis=2),
+        np.stack((t, p, value), axis=2),
+        np.stack((value, p, q), axis=2),
+    )
+    return np.choose(np.mod(sector, 6)[..., None], choices)
+
+
+def _soft_range_gate(values: np.ndarray, bounds: list[float], feather: float) -> np.ndarray:
+    low, high = [float(item) for item in bounds]
+    if feather <= 0.0:
+        return ((values >= low) & (values <= high)).astype(np.float32)
+    left = np.clip((values - (low - feather)) / feather, 0.0, 1.0)
+    right = np.clip(((high + feather) - values) / feather, 0.0, 1.0)
+    return np.minimum(left, right)
+
+
+def _apply_hue_ranges(rgb: np.ndarray, ranges: list[dict[str, Any]]) -> np.ndarray:
+    """Apply smooth, source-pixel-derived hue remaps without semantic or spatial masks."""
+    result = rgb
+    for item in ranges:
+        encoded = np.clip(linear_to_srgb(result), 0.0, 1.0)
+        hue, saturation, value = _rgb_to_hsv(encoded)
+        center = float(item["center_degrees"]) / 360.0
+        half_width = float(item["width_degrees"]) / 720.0
+        feather_hue = float(item.get("feather_degrees", 0.0)) / 360.0
+        distance = np.abs(np.mod(hue - center + 0.5, 1.0) - 0.5)
+        if feather_hue <= 0.0:
+            hue_gate = (distance <= half_width).astype(np.float32)
+        else:
+            hue_gate = np.clip((half_width + feather_hue - distance) / feather_hue, 0.0, 1.0)
+        source_luma = np.clip(luminance(result), 0.0, 1.0)
+        range_feather = float(item.get("range_feather", 0.05))
+        saturation_gate = _soft_range_gate(
+            saturation, item.get("saturation_range", [0.0, 1.0]), range_feather
+        )
+        luminance_gate = _soft_range_gate(
+            source_luma, item.get("luminance_range", [0.0, 1.0]), range_feather
+        )
+        weight = (
+            hue_gate * saturation_gate * luminance_gate * float(item.get("strength", 1.0))
+        )
+        shifted_hue = np.mod(hue + float(item.get("hue_shift_degrees", 0.0)) / 360.0, 1.0)
+        shifted_saturation = np.clip(
+            saturation * float(item.get("saturation_scale", 1.0)), 0.0, 1.0
+        )
+        shifted_encoded = _hsv_to_rgb(shifted_hue, shifted_saturation, value)
+        shifted_linear = srgb_to_linear(shifted_encoded)
+        shifted_luma = np.maximum(luminance(shifted_linear), 1e-8)
+        target_luma = source_luma * float(item.get("luminance_scale", 1.0))
+        shifted_linear *= (target_luma / shifted_luma)[..., None]
+        result = result * (1.0 - weight[..., None]) + shifted_linear * weight[..., None]
+    return result
 
 
 def _compress_chroma_to_unit_gamut(rgb: np.ndarray) -> tuple[np.ndarray, float]:
@@ -329,6 +488,10 @@ def _apply_look(rgb: np.ndarray, look: dict[str, Any]) -> np.ndarray:
     offset = np.asarray(cdl.get("offset", [0.0, 0.0, 0.0]), dtype=np.float32)
     power = np.asarray(cdl.get("power", [1.0, 1.0, 1.0]), dtype=np.float32)
     result = np.maximum(result * slope + offset, 0.0) ** power
+    # Select hue ranges before global chroma controls so an intentionally
+    # excluded saturated color cannot become eligible merely because the
+    # recipe later desaturates the whole image.
+    result = _apply_hue_ranges(result, look.get("hue_ranges", []))
     result = _apply_saturation(result, float(cdl.get("saturation", 1.0)))
     result = _apply_saturation(result, float(look.get("saturation", 1.0)))
     result = _apply_vibrance(result, float(look.get("vibrance", 0.0)))
@@ -399,11 +562,11 @@ def _apply_source_glow(
 def load_image(path: str | Path, max_size: int | None = None) -> tuple[np.ndarray, np.ndarray | None, dict[str, Any]]:
     with Image.open(path) as source:
         if source.format not in {"JPEG", "PNG"}:
-            raise RecipeError("v0.2 accepts only JPEG and PNG images")
+            raise RecipeError("v0.3 accepts only JPEG and PNG images")
         if getattr(source, "n_frames", 1) != 1:
-            raise RecipeError("v0.2 accepts only single-frame images")
+            raise RecipeError("v0.3 accepts only single-frame images")
         if source.mode in {"I", "I;16", "I;16B", "I;16L", "F"}:
-            raise RecipeError("v0.2 accepts only 8-bit image channels")
+            raise RecipeError("v0.3 accepts only 8-bit image channels")
         embedded_profile = source.info.get("icc_profile")
         info = {
             "source_mode": source.mode,
@@ -522,11 +685,26 @@ def analyze_array(encoded_rgb: np.ndarray) -> dict[str, Any]:
     saturation = np.zeros_like(maximum)
     np.divide(maximum - minimum, maximum, out=saturation, where=maximum > 1e-6)
     skin = _skin_mask(encoded_rgb)
+    luma_percentiles = {
+        str(percentile): round(float(np.percentile(luma, percentile)), 6)
+        for percentile in (1, 5, 25, 50, 75, 95, 99)
+    }
+    low = float(luma_percentiles["25"])
+    high = float(luma_percentiles["75"])
+
+    def zone_mean(mask: np.ndarray) -> list[float]:
+        values = encoded_rgb[mask]
+        if values.size == 0:
+            values = encoded_rgb.reshape(-1, 3)
+        return [round(float(value), 6) for value in np.mean(values, axis=0)]
+
     return {
         "channel_mean_srgb": [round(float(value), 6) for value in np.mean(encoded_rgb, axis=(0, 1))],
-        "luminance_percentiles_linear": {
-            str(percentile): round(float(np.percentile(luma, percentile)), 6)
-            for percentile in (1, 5, 50, 95, 99)
+        "luminance_percentiles_linear": luma_percentiles,
+        "tonal_zone_mean_srgb": {
+            "shadows": zone_mean(luma <= low),
+            "midtones": zone_mean((luma > low) & (luma < high)),
+            "highlights": zone_mean(luma >= high),
         },
         "clipping": {
             "near_black_fraction": round(float(np.mean(luma <= 1.0 / 255.0)), 6),
@@ -534,7 +712,9 @@ def analyze_array(encoded_rgb: np.ndarray) -> dict[str, Any]:
             "any_channel_high_fraction": round(float(np.mean(np.any(encoded_rgb >= 254.0 / 255.0, axis=2))), 6),
         },
         "saturation": {
+            "p25": round(float(np.percentile(saturation, 25)), 6),
             "median": round(float(np.median(saturation)), 6),
+            "p75": round(float(np.percentile(saturation, 75)), 6),
             "p95": round(float(np.percentile(saturation, 95)), 6),
             "extreme_fraction": round(float(np.mean(saturation >= 0.98)), 6),
         },

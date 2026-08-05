@@ -4,7 +4,7 @@
 
 Every recipe is JSON with these allowed keys:
 
-- `schema_version`: `1.0` for color-only recipes or `1.1` for recipes with controlled effects.
+- `schema_version`: `1.0` for the original color-only schema, `1.1` for vibrance and controlled effects, or `1.2` for deterministic hue-range remapping.
 - `intent`: short human-readable explanation.
 - `strategy`: selected aesthetic strategy and how it was selected.
 - `preservation`: strict execution policy.
@@ -12,6 +12,7 @@ Every recipe is JSON with these allowed keys:
 - `look`: reusable creative treatment.
 - `effects`: optional, explicitly approved source-derived light diffusion.
 - `protection`: protected-region settings.
+- `quality_tolerances`: optional schema 1.2 warning-baseline allowance for an explicitly requested transformative tonal hierarchy.
 - `output`: encoding settings.
 
 Unknown keys fail validation.
@@ -28,7 +29,7 @@ Use this optional object for new recipes:
 }
 ```
 
-- `intensity`: `conservative`, `standard`, or `bold`.
+- `intensity`: `conservative`, `standard`, `bold`, or `transformative`.
 - `style`: `technical`, `natural`, `cinematic`, `reference`, or `custom`.
 - `selection`: `explicit`, `inferred`, `default-standard`, or `template`.
 
@@ -45,7 +46,7 @@ This field records the decision; it does not weaken strict preservation. Legacy 
 }
 ```
 
-All four values are mandatory in v0.2 and must match the example exactly.
+All four values are mandatory in v0.3 and must match the example exactly.
 
 ## Correction
 
@@ -69,19 +70,37 @@ Allowed keys and ranges:
 - `cdl.power`: three values in `0.25..4.0`
 - `cdl.saturation`: `0.0..2.0`
 - `saturation`: `0.0..2.0`
-- `vibrance`: schema 1.1 only, `-1.0..2.0`; positive values affect muted colors more than saturated colors, while negative values create a soft color wash without uniformly crushing strong signature colors.
+- `vibrance`: schema 1.1 or 1.2, `-1.0..2.0`; positive values affect muted colors more than saturated colors, while negative values create a soft color wash without uniformly crushing strong signature colors.
 - `split_tone.shadows`: RGB triplet in `0.0..1.0`
 - `split_tone.highlights`: RGB triplet in `0.0..1.0`
 - `split_tone.balance`: `-1.0..1.0`
 - `split_tone.strength`: `0.0..0.25`
+- `hue_ranges`: schema 1.2 only; up to eight smoothly feathered source-color ranges.
 
 The renderer applies correction before look.
 
 Use only one chroma control: `cdl.saturation`, `saturation`, or `vibrance`. Validation rejects stacked controls. Treat natural color as a hue/white-balance goal, not as a request to desaturate.
 
+### Hue ranges (schema 1.2)
+
+Use hue ranges only when the treatment contract explicitly requests a selective or major color-family change. Each item accepts:
+
+- `label`: optional human-readable rationale;
+- `center_degrees`: source hue center in `0..360`;
+- `width_degrees`: full-strength hue width in `1..180`;
+- `feather_degrees`: outer hue feather in `0..90`, no greater than the width;
+- `hue_shift_degrees`: signed source hue rotation in `-180..180`;
+- `saturation_scale`: source saturation multiplier in `0..2`;
+- `luminance_scale`: source luminance multiplier in `0.25..2`;
+- `saturation_range` and `luminance_range`: two-value source-selection bounds in `0..1`;
+- `range_feather`: smooth feather outside those bounds in `0..0.25`;
+- `strength`: blend strength in `0..1`.
+
+Selection is computed from source-derived pixel color, never an object label or generated mask. Hue remapping runs before the global chroma control so a highly saturated excluded color does not become eligible merely because the recipe later desaturates it. Keep feathers broad enough to avoid banding and inspect color boundaries at 100%.
+
 ## Effects
 
-Effects require `schema_version: 1.1`. Omit `effects` for color-only work. An enabled effect must use:
+Effects require `schema_version: 1.1` or `1.2`. Omit `effects` for color-only work. An enabled effect must use:
 
 ```json
 {
@@ -116,6 +135,19 @@ If an `effects` object is present but disabled, it must use `permission: none` a
 ```
 
 `strength` is `0.0..1.0` and controls how much of the grade is removed in high-confidence skin regions. Disable skin protection for images without people when visual inspection confirms that choice.
+
+## Quality tolerances
+
+Schema 1.2 transformative recipes may record:
+
+```json
+{
+  "intentional_near_black_increase": 0.18,
+  "reason": "The requested low-key treatment deliberately darkens non-subject surroundings"
+}
+```
+
+The increase is limited to `0.0..0.25`, requires a non-empty reason, and only changes the near-black warning baseline. It never relaxes clipping, non-finite values, dimensions, alpha, structure, new-edge, texture, effect-consent, or content-preservation gates. Do not add it merely to silence a warning; use it only when the treatment contract explicitly requires a darker tonal hierarchy or a reviewed reference demonstrates one.
 
 ## Output
 

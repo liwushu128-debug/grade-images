@@ -29,6 +29,8 @@ Keep correction source-specific. Exposure and white balance frequently differ ac
 - Scale split toning to the selected intensity while avoiding a uniform global cast. Bold grades may use stronger tonal-zone separation, but correction and look must remain distinct.
 - Preserve source chroma by default for natural styles. Do not treat a high P95 saturation measurement as sufficient reason to lower global saturation; require visible clipping, hue breakage, or fluorescence.
 - Use vibrance when the required saturation ratio differs between muted and already-saturated regions. Its per-pixel factor is strongest at low chroma and approaches neutral at high chroma, reducing fluorescent clipping during bold grades.
+- For schema 1.2 hue ranges, derive selection from encoded-source hue and saturation plus linear luminance, use circular hue distance, and feather every boundary. Apply the range before global saturation or vibrance so excluded saturated colors do not enter the range after desaturation. Preserve source luminance unless the treatment contract explicitly changes it, then apply only the bounded luminance scale recorded in the recipe.
+- Hue is unstable near neutral gray. Use a nonzero lower saturation bound when shifting hue, and do not increase saturation so aggressively that nearly neutral noise becomes colored texture. A hue range is not evidence that an object was semantically identified.
 - Before encoding, compress out-of-gamut chroma toward luminance while preserving luminance and hue direction. Prefer this bounded compression over independent channel clipping.
 - Derive source-glow position only from original linear luminance. Use graded RGB for light color, blur only the extracted light layer, and composite with bounded screen-like addition. Never generate a spatial light mask from a prompt alone.
 
@@ -40,6 +42,6 @@ Do not apply identical correction parameters to every image. Estimate a safe bas
 
 Treat reference matching as a comparison of distributions and tonal zones, not literal pixel correspondence. Separate luminance from chroma, cap match strength, and reduce changes in protected skin regions. A reference with a different subject or lighting geometry can guide mood but cannot define a physically exact match.
 
-When median- and P95-saturation ratios differ materially, derive vibrance rather than forcing one global saturation factor. Record the selected chroma control in match diagnostics.
+Compare P25, median, P75, and P95 saturation ratios. When they differ materially, derive vibrance rather than forcing one global saturation factor. Compare shadow and highlight spans separately so a soft reference is not reduced to simple desaturation and a rich reference is not reduced to a global saturation increase. Record the selected chroma control and zone ratios in match diagnostics.
 
 Limit automatic exposure matching to `±strength` EV. This keeps a restrained cross-scene match from inheriting an unrelated reference's day/night exposure level.

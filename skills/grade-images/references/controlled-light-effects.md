@@ -6,6 +6,8 @@ Keep aesthetic intensity and effect permission independent. `bold` never grants 
 
 Likely effect-bearing cues include dreamlike, soft glow, bloom, luminous, hazy, ethereal, sacred light, halation, glowing, `梦境`, `梦幻`, `柔光`, `朦胧`, `辉光`, `光晕`, `发光`, `仙气`, `神性`, and `圣洁`. Words such as bold, vivid, deep, high contrast, natural, or cinematic do not by themselves require an effect.
 
+Treat those words as cues to assess, not automatic reasons to interrupt. If a concrete color-and-tone contract already explains the requested mood—for example pale-violet blossoms, suppressed yellow, darker surroundings, and a cold `神性` atmosphere—render the color-only preview with effects absent. Ask for diffusion permission only when the user or reference specifically needs softened highlight spread that color and tone cannot reproduce.
+
 Use this consent question in the user's language:
 
 > Color and tone alone may not fully create this light quality. May I add restrained source-derived highlight diffusion? It will not add a light source, object, ray, flare, or new scene content, but it can slightly soften local contrast around existing highlights.
@@ -14,7 +16,7 @@ If the user declines or does not answer, keep effects absent and explain the col
 
 ## Allowed source-derived effect
 
-Version 0.2 allows only `source_glow`:
+Version 0.3 allows only `source_glow`:
 
 - derive its spatial support exclusively from luminance already present in the input;
 - retain the graded pixels as the base layer;

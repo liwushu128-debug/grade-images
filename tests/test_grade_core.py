@@ -20,10 +20,22 @@ sys.path.insert(0, str(SKILL / "scripts"))
 import batch as batch_script  # noqa: E402
 import analyze as analyze_script  # noqa: E402
 import compare as compare_script  # noqa: E402
+import preview as preview_script  # noqa: E402
+import variants as variants_script  # noqa: E402
 from batch import derive_batch_recipes  # noqa: E402
-from compare import difference_metrics, gradient_metrics, reference_match_metrics, strategy_warnings  # noqa: E402
+from compare import (  # noqa: E402
+    difference_metrics,
+    gradient_metrics,
+    reference_adjustment_suggestions,
+    reference_match_metrics,
+    strategy_warnings,
+)
 from grade_core import RecipeError, load_image, load_recipe, render_array, save_image, validate_recipe  # noqa: E402
 from match import derive_match_recipe  # noqa: E402
+from variants import derive_intensity_recipe, render_variants  # noqa: E402
+from regress import run_regression  # noqa: E402
+from search_match import STRENGTH_GRIDS, search_reference_match  # noqa: E402
+from preview import render_preview  # noqa: E402
 
 
 class GradeCoreTests(unittest.TestCase):
@@ -35,6 +47,7 @@ class GradeCoreTests(unittest.TestCase):
         cls.natural_path = SKILL / "assets" / "recipes" / "natural-standard.json"
         cls.bold_path = SKILL / "assets" / "recipes" / "bold-cinematic.json"
         cls.soft_glow_path = SKILL / "assets" / "recipes" / "soft-dream-source-glow.json"
+        cls.transformative_path = SKILL / "assets" / "recipes" / "transformative-cool-violet.json"
 
     def test_bundled_recipes_validate(self) -> None:
         load_recipe(self.neutral_path)
@@ -43,6 +56,7 @@ class GradeCoreTests(unittest.TestCase):
         load_recipe(self.natural_path)
         load_recipe(self.bold_path)
         load_recipe(self.soft_glow_path)
+        load_recipe(self.transformative_path)
 
     def test_double_saturation_adjustment_fails_closed(self) -> None:
         recipe = copy.deepcopy(load_recipe(self.neutral_path))
@@ -57,6 +71,8 @@ class GradeCoreTests(unittest.TestCase):
         with self.assertRaisesRegex(RecipeError, "schema_version"):
             validate_recipe(recipe)
         recipe["schema_version"] = "1.1"
+        validate_recipe(recipe)
+        recipe["schema_version"] = "1.2"
         validate_recipe(recipe)
         recipe["look"]["saturation"] = 1.1
         with self.assertRaisesRegex(RecipeError, "only one chroma control"):
@@ -235,6 +251,36 @@ class GradeCoreTests(unittest.TestCase):
         self.assertGreater(recipe["look"]["vibrance"], 0.0)
         self.assertEqual(recipe["look"]["saturation"], 1.0)
 
+    def test_bidirectional_rich_soft_matching_moves_in_opposite_directions(self) -> None:
+        y, x = np.mgrid[0:80, 0:120]
+        x = x / 119.0
+        y = y / 79.0
+        rich = np.stack(
+            [0.08 + 0.82 * x, 0.10 + 0.72 * y, 0.12 + 0.70 * (1.0 - x)], axis=2
+        ).astype(np.float32)
+        soft = np.clip(rich * 0.42 + 0.43, 0.0, 1.0).astype(np.float32)
+        template = load_recipe(self.neutral_path)
+        recipes = []
+        improvements = []
+        for source, reference in ((rich, soft), (soft, rich)):
+            recipe, _ = derive_match_recipe(
+                source, reference, template, strength=0.90, skin_protection=False
+            )
+            output, _ = render_array(source, recipe)
+            metrics = reference_match_metrics(
+                analyze_script.analyze_array(source),
+                analyze_script.analyze_array(output),
+                analyze_script.analyze_array(reference),
+            )
+            recipes.append(recipe)
+            improvements.append(metrics["improvement_fraction"])
+        self.assertGreater(improvements[0], 0.40)
+        self.assertGreater(improvements[1], 0.40)
+        self.assertGreater(recipes[0]["correction"]["exposure_ev"], 0.0)
+        self.assertLess(recipes[1]["correction"]["exposure_ev"], 0.0)
+        self.assertLess(recipes[0]["look"]["tone_curve"]["strength"], 0.0)
+        self.assertGreater(recipes[1]["look"]["tone_curve"]["strength"], 0.0)
+
     def test_batch_uses_individual_corrections_and_identical_shared_look(self) -> None:
         template = load_recipe(self.cinematic_path)
         with tempfile.TemporaryDirectory() as directory:
@@ -325,6 +371,18 @@ class GradeCoreTests(unittest.TestCase):
         self.assertTrue(any("standard strategy" in item for item in strategy_warnings(standard, difference)))
         self.assertTrue(any("bold strategy" in item for item in strategy_warnings(bold, difference)))
 
+    def test_transformative_localized_change_does_not_require_large_global_mean(self) -> None:
+        recipe = copy.deepcopy(load_recipe(self.transformative_path))
+        localized = {
+            "mean_absolute_rgb_delta": 0.025,
+            "p95_pixel_rgb_delta": 0.12,
+            "mean_absolute_luma_delta": 0.01,
+            "changed_pixel_fraction_2_255": 0.18,
+        }
+        weak = dict(localized, p95_pixel_rgb_delta=0.05)
+        self.assertFalse(strategy_warnings(recipe, localized))
+        self.assertTrue(any("transformative strategy" in item for item in strategy_warnings(recipe, weak)))
+
     def test_reference_match_metrics_distinguish_safety_from_target_progress(self) -> None:
         source = analyze_script.analyze_array(np.full((20, 20, 3), [0.75, 0.72, 0.68], dtype=np.float32))
         output = analyze_script.analyze_array(np.full((20, 20, 3), [0.55, 0.48, 0.42], dtype=np.float32))
@@ -332,6 +390,20 @@ class GradeCoreTests(unittest.TestCase):
         metrics = reference_match_metrics(source, output, reference)
         self.assertGreater(metrics["improvement_fraction"], 0.20)
         self.assertLess(metrics["output_distribution_distance"], metrics["source_distribution_distance"])
+
+    def test_reference_metrics_report_zones_and_actionable_suggestions(self) -> None:
+        output = analyze_script.analyze_array(
+            np.full((20, 20, 3), [0.35, 0.37, 0.40], dtype=np.float32)
+        )
+        reference = analyze_script.analyze_array(
+            np.full((20, 20, 3), [0.70, 0.50, 0.30], dtype=np.float32)
+        )
+        suggestions = reference_adjustment_suggestions(output, reference)
+        dimensions = {item["dimension"] for item in suggestions}
+        self.assertIn("exposure", dimensions)
+        self.assertIn("color_balance", dimensions)
+        self.assertIn("25", output["luminance_percentiles_linear"])
+        self.assertIn("midtones", output["tonal_zone_mean_srgb"])
 
     def test_compare_cli_separates_preservation_from_reference_intent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -377,6 +449,199 @@ class GradeCoreTests(unittest.TestCase):
         bold_delta = difference_metrics(source, bold)["mean_absolute_rgb_delta"]
         self.assertGreater(bold_delta, conservative_delta * 1.5)
 
+    def test_variant_preview_keeps_outputs_and_builds_labeled_comparison(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.png"
+            output_dir = root / "previews"
+            y, x = np.mgrid[0:60, 0:80]
+            rgb = np.stack(
+                [40 + x * 2, 55 + y * 2, 90 + x], axis=2
+            ).clip(0, 255).astype(np.uint8)
+            Image.fromarray(rgb, mode="RGB").save(source)
+            source_hash = variants_script.sha256_file(source)
+            manifest = render_variants(
+                source,
+                [
+                    ("Conservative", self.cinematic_path),
+                    ("Standard", self.natural_path),
+                    ("Bold", self.bold_path),
+                ],
+                output_dir,
+                max_size=200,
+                columns=2,
+            )
+            self.assertEqual(source_hash, variants_script.sha256_file(source))
+            self.assertEqual(len(manifest["variants"]), 3)
+            self.assertTrue(Path(manifest["comparison_sheet"]).is_file())
+            self.assertTrue(Path(manifest["manifest"]).is_file())
+            deltas = [item["difference"]["mean_absolute_rgb_delta"] for item in manifest["variants"]]
+            self.assertGreater(max(deltas), min(deltas))
+            for item in manifest["variants"]:
+                self.assertTrue(Path(item["output"]).is_file())
+                self.assertTrue(Path(item["recipe_copy"]).is_file())
+
+    def test_single_pass_preview_keeps_artifacts_and_reports_timing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.png"
+            reference = root / "reference.png"
+            output_dir = root / "preview"
+            y, x = np.mgrid[0:72, 0:108]
+            warm = np.stack(
+                [
+                    0.18 + 0.62 * x / 107.0,
+                    0.12 + 0.45 * y / 71.0,
+                    np.full(x.shape, 0.16, dtype=np.float32),
+                ],
+                axis=2,
+            ).clip(0.0, 1.0)
+            cool = np.stack((warm[..., 2], warm[..., 1] * 0.9, warm[..., 0] * 0.8), axis=2)
+            Image.fromarray(np.uint8(np.round(warm * 255.0)), mode="RGB").save(source)
+            Image.fromarray(np.uint8(np.round(cool * 255.0)), mode="RGB").save(reference)
+            source_hash = variants_script.sha256_file(source)
+            manifest = render_preview(
+                source,
+                self.transformative_path,
+                output_dir,
+                max_size=160,
+                reference_path=reference,
+                label="Transformative test",
+            )
+            self.assertEqual(source_hash, variants_script.sha256_file(source))
+            self.assertTrue(Path(manifest["preview"]).is_file())
+            self.assertTrue(Path(manifest["comparison_sheet"]).is_file())
+            self.assertTrue(Path(manifest["quality_report"]).is_file())
+            self.assertTrue(Path(manifest["recipe"]).is_file())
+            self.assertGreaterEqual(manifest["timing_seconds"]["total"], 0.0)
+            report = json.loads(Path(manifest["quality_report"]).read_text(encoding="utf-8"))
+            self.assertIn("difference", report)
+            self.assertIn("target_match", report)
+
+    def test_automatic_intensity_variants_scale_only_the_creative_look(self) -> None:
+        base = load_recipe(self.bold_path)
+        derived = {
+            intensity: derive_intensity_recipe(base, intensity)
+            for intensity in ("conservative", "standard", "bold")
+        }
+        for recipe in derived.values():
+            validate_recipe(recipe)
+            self.assertEqual(recipe["correction"], base["correction"])
+            self.assertEqual(recipe.get("effects"), base.get("effects"))
+            self.assertEqual(recipe["protection"], base["protection"])
+        strengths = [
+            derived[intensity]["look"]["tone_curve"]["strength"]
+            for intensity in ("conservative", "standard", "bold")
+        ]
+        self.assertLess(strengths[0], strengths[1])
+        self.assertLess(strengths[1], strengths[2])
+        self.assertEqual(derived["bold"]["look"], base["look"])
+
+    def test_transformative_derivation_scales_hue_change_without_broadening_selection(self) -> None:
+        base = load_recipe(self.transformative_path)
+        standard = derive_intensity_recipe(base, "standard")
+        bold = derive_intensity_recipe(base, "bold")
+        transformative = derive_intensity_recipe(base, "transformative")
+        for recipe in (standard, bold, transformative):
+            validate_recipe(recipe)
+            self.assertEqual(recipe["correction"], base["correction"])
+            self.assertEqual(recipe["protection"], base["protection"])
+            self.assertEqual(
+                recipe["look"]["hue_ranges"][0]["width_degrees"],
+                base["look"]["hue_ranges"][0]["width_degrees"],
+            )
+            self.assertEqual(
+                recipe["look"]["hue_ranges"][0]["feather_degrees"],
+                base["look"]["hue_ranges"][0]["feather_degrees"],
+            )
+        shifts = [
+            abs(recipe["look"]["hue_ranges"][0]["hue_shift_degrees"])
+            for recipe in (standard, bold, transformative)
+        ]
+        self.assertLess(shifts[0], shifts[1])
+        self.assertLess(shifts[1], shifts[2])
+        self.assertEqual(
+            standard["quality_tolerances"]["intentional_near_black_increase"], 0.0
+        )
+        self.assertEqual(bold["quality_tolerances"]["intentional_near_black_increase"], 0.0)
+        self.assertGreater(
+            transformative["quality_tolerances"]["intentional_near_black_increase"], 0.0
+        )
+        self.assertEqual(transformative["look"], base["look"])
+
+    def test_local_regression_manifest_runs_without_committing_private_images(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "soft.png"
+            reference = root / "rich.png"
+            output_dir = root / "regression"
+            y, x = np.mgrid[0:64, 0:96]
+            soft = np.stack(
+                [120 + x * 0.5, 130 + y * 0.4, 145 + x * 0.3], axis=2
+            ).clip(0, 255).astype(np.uint8)
+            rich = np.stack(
+                [55 + x * 1.7, 70 + y * 1.2, 105 + x * 0.8], axis=2
+            ).clip(0, 255).astype(np.uint8)
+            Image.fromarray(soft, mode="RGB").save(source)
+            Image.fromarray(rich, mode="RGB").save(reference)
+            manifest_path = root / "cases.json"
+            manifest_path.write_text(json.dumps({
+                "schema_version": "1.0",
+                "cases": [{
+                    "name": "soft-to-rich",
+                    "direction": "soft-to-rich",
+                    "source": source.name,
+                    "reference": reference.name,
+                    "template": str(self.neutral_path),
+                    "strength": 0.9,
+                    "minimum_improvement_fraction": 0.0,
+                    "skin_protection": False,
+                }],
+            }), encoding="utf-8")
+            report = run_regression(manifest_path, output_dir)
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(report["cases"][0]["direction"], "soft-to-rich")
+            self.assertTrue(Path(report["cases"][0]["recipe"]).is_file())
+            self.assertTrue(Path(report["report"]).is_file())
+
+    def test_reference_search_stays_inside_selected_intensity_and_selects_best_safe_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "soft.png"
+            reference = root / "rich.png"
+            output_dir = root / "search"
+            y, x = np.mgrid[0:72, 0:108]
+            x = x / 107.0
+            y = y / 71.0
+            rich = np.stack(
+                [0.08 + 0.82 * x, 0.10 + 0.72 * y, 0.12 + 0.70 * (1.0 - x)], axis=2
+            )
+            soft = np.clip(rich * 0.42 + 0.43, 0.0, 1.0)
+            Image.fromarray(np.uint8(np.round(soft * 255.0)), mode="RGB").save(source)
+            Image.fromarray(np.uint8(np.round(rich * 255.0)), mode="RGB").save(reference)
+            source_hash = variants_script.sha256_file(source)
+            report = search_reference_match(
+                source,
+                reference,
+                self.neutral_path,
+                "bold",
+                output_dir,
+                max_size=240,
+                skin_protection=False,
+            )
+            self.assertEqual(report["status"], "pass")
+            self.assertEqual(report["strength_grid"], list(STRENGTH_GRIDS["bold"]))
+            self.assertEqual(len(report["candidates"]), 3)
+            self.assertTrue(all(candidate["strength"] >= 0.8 for candidate in report["candidates"]))
+            safe_distances = [
+                candidate["match"]["output_distribution_distance"]
+                for candidate in report["candidates"] if candidate["status"] == "safe"
+            ]
+            self.assertEqual(report["selected"]["match"]["output_distribution_distance"], min(safe_distances))
+            self.assertEqual(source_hash, variants_script.sha256_file(source))
+            self.assertTrue(Path(report["comparison_sheet"]).is_file())
+            self.assertTrue(Path(report["selected"]["recipe"]).is_file())
+
     def test_black_point_mapping_does_not_create_colored_channel_zeros(self) -> None:
         recipe = load_recipe(self.neutral_path)
         recipe = copy.deepcopy(recipe)
@@ -386,6 +651,67 @@ class GradeCoreTests(unittest.TestCase):
         output, _ = render_array(source, recipe)
         channel_is_zero = output[0, 0] <= 1.0 / 255.0
         self.assertIn(int(np.sum(channel_is_zero)), {0, 3})
+
+    def test_schema_1_2_transformative_hue_range_is_smooth_and_selective(self) -> None:
+        recipe = copy.deepcopy(load_recipe(self.neutral_path))
+        recipe["schema_version"] = "1.2"
+        recipe["strategy"] = {
+            "intensity": "transformative",
+            "style": "custom",
+            "selection": "explicit",
+        }
+        recipe["look"]["hue_ranges"] = [{
+            "label": "warm blossoms to pale violet",
+            "center_degrees": 42.0,
+            "width_degrees": 72.0,
+            "feather_degrees": 24.0,
+            "hue_shift_degrees": -118.0,
+            "saturation_scale": 0.72,
+            "luminance_scale": 1.0,
+            "saturation_range": [0.04, 0.78],
+            "luminance_range": [0.04, 0.95],
+            "range_feather": 0.05,
+            "strength": 0.92,
+        }]
+        recipe["protection"]["skin"] = {"enabled": False, "strength": 0.0}
+        validate_recipe(recipe)
+        source = np.zeros((24, 36, 3), dtype=np.float32)
+        source[:, :18] = [0.82, 0.62, 0.42]
+        source[:, 18:] = [0.52, 0.52, 0.52]
+        output, _ = render_array(source, recipe)
+        warm_output = output[:, :18].mean(axis=(0, 1))
+        neutral_output = output[:, 18:].mean(axis=(0, 1))
+        self.assertGreater(warm_output[2], warm_output[0])
+        self.assertLess(float(np.max(np.abs(neutral_output - 0.52))), 0.01)
+
+    def test_hue_ranges_require_schema_1_2_and_reject_unknown_operations(self) -> None:
+        recipe = copy.deepcopy(load_recipe(self.neutral_path))
+        recipe["look"]["hue_ranges"] = [{
+            "center_degrees": 45.0,
+            "width_degrees": 60.0,
+            "hue_shift_degrees": -90.0,
+        }]
+        with self.assertRaises(RecipeError):
+            validate_recipe(recipe)
+        recipe["schema_version"] = "1.2"
+        recipe["look"]["hue_ranges"][0]["semantic_mask"] = "flowers"
+        with self.assertRaises(RecipeError):
+            validate_recipe(recipe)
+
+    def test_near_black_intent_tolerance_is_bounded_and_transformative_only(self) -> None:
+        recipe = copy.deepcopy(load_recipe(self.transformative_path))
+        validate_recipe(recipe)
+        recipe["quality_tolerances"]["intentional_near_black_increase"] = 0.26
+        with self.assertRaises(RecipeError):
+            validate_recipe(recipe)
+        recipe = copy.deepcopy(load_recipe(self.transformative_path))
+        recipe["strategy"]["intensity"] = "bold"
+        with self.assertRaises(RecipeError):
+            validate_recipe(recipe)
+        recipe = copy.deepcopy(load_recipe(self.transformative_path))
+        recipe["quality_tolerances"]["reason"] = ""
+        with self.assertRaises(RecipeError):
+            validate_recipe(recipe)
 
     def test_unsupported_format_and_high_bit_depth_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -1,4 +1,4 @@
 interface:
   display_name: "Grade Images"
-  short_description: "Reproducible color grades and approved source glow"
-  default_prompt: "Use $grade-images to color-grade these photos, ask before any source-derived glow, and never synthesize lighting or alter scene content."
+  short_description: "Deterministic grades from subtle to transformative"
+  default_prompt: "Use $grade-images to choose the closest safe preset first, render a single-pass preview, honor explicit transformative color intent without chasing unrelated global thresholds, ask before source-derived glow, and never alter scene content."

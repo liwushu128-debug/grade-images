@@ -16,18 +16,29 @@ def _distribution_signature(analysis: dict) -> np.ndarray:
     return np.asarray(
         [
             luma["5"],
+            luma.get("25", luma["5"]),
             luma["50"],
+            luma.get("75", luma["95"]),
             luma["95"],
+            saturation.get("p25", saturation["median"]),
             saturation["median"],
+            saturation.get("p75", saturation["p95"]),
             saturation["p95"],
             *analysis["channel_mean_srgb"],
+            *analysis.get("tonal_zone_mean_srgb", {}).get("shadows", analysis["channel_mean_srgb"]),
+            *analysis.get("tonal_zone_mean_srgb", {}).get("midtones", analysis["channel_mean_srgb"]),
+            *analysis.get("tonal_zone_mean_srgb", {}).get("highlights", analysis["channel_mean_srgb"]),
         ],
         dtype=np.float64,
     )
 
 
 def reference_match_metrics(source: dict, output: dict, reference: dict) -> dict[str, float]:
-    weights = np.asarray([1.0, 1.5, 1.0, 1.2, 0.8, 0.35, 0.35, 0.35], dtype=np.float64)
+    weights = np.asarray(
+        [1.0, 1.1, 1.5, 1.1, 1.0, 0.8, 1.2, 1.0, 0.8, 0.35, 0.35, 0.35,
+         0.25, 0.25, 0.25, 0.35, 0.35, 0.35, 0.25, 0.25, 0.25],
+        dtype=np.float64,
+    )
     reference_signature = _distribution_signature(reference)
     source_distance = float(np.average(np.abs(_distribution_signature(source) - reference_signature), weights=weights))
     output_distance = float(np.average(np.abs(_distribution_signature(output) - reference_signature), weights=weights))
@@ -35,11 +46,99 @@ def reference_match_metrics(source: dict, output: dict, reference: dict) -> dict
         improvement = 1.0 if output_distance <= 1e-8 else 0.0
     else:
         improvement = 1.0 - output_distance / source_distance
-    return {
+    metrics = {
         "source_distribution_distance": round(source_distance, 6),
         "output_distribution_distance": round(output_distance, 6),
         "improvement_fraction": round(float(improvement), 6),
     }
+    groups = {
+        "tone": slice(0, 5),
+        "chroma": slice(5, 9),
+        "global_color": slice(9, 12),
+        "tonal_zone_color": slice(12, 21),
+    }
+    source_signature = _distribution_signature(source)
+    output_signature = _distribution_signature(output)
+    for name, section in groups.items():
+        source_component = float(np.mean(np.abs(source_signature[section] - reference_signature[section])))
+        output_component = float(np.mean(np.abs(output_signature[section] - reference_signature[section])))
+        component_improvement = (
+            1.0 if source_component <= 1e-8 and output_component <= 1e-8
+            else (0.0 if source_component <= 1e-8 else 1.0 - output_component / source_component)
+        )
+        metrics[f"{name}_source_distance"] = round(source_component, 6)
+        metrics[f"{name}_output_distance"] = round(output_component, 6)
+        metrics[f"{name}_improvement_fraction"] = round(float(component_improvement), 6)
+    return metrics
+
+
+def reference_adjustment_suggestions(output: dict, reference: dict) -> list[dict[str, str]]:
+    """Return evidence-based next adjustments, ordered by conceptual dimension."""
+    suggestions: list[dict[str, str]] = []
+    output_luma = output["luminance_percentiles_linear"]
+    reference_luma = reference["luminance_percentiles_linear"]
+    median_delta = float(reference_luma["50"] - output_luma["50"])
+    if abs(median_delta) > 0.025:
+        direction = "increase" if median_delta > 0.0 else "decrease"
+        suggestions.append({
+            "dimension": "exposure",
+            "direction": direction,
+            "message": f"{direction} exposure or midtone luminance before changing color",
+            "evidence": f"output/reference linear median: {output_luma['50']:.3f}/{reference_luma['50']:.3f}",
+        })
+
+    output_range = max(float(output_luma["95"] - output_luma["5"]), 1e-6)
+    reference_range = max(float(reference_luma["95"] - reference_luma["5"]), 1e-6)
+    range_ratio = reference_range / output_range
+    if range_ratio > 1.18 or range_ratio < 0.82:
+        direction = "increase" if range_ratio > 1.0 else "soften"
+        suggestions.append({
+            "dimension": "tonal_contrast",
+            "direction": direction,
+            "message": f"{direction} tonal contrast; review shadow and highlight separation together",
+            "evidence": f"target/output P05-P95 range ratio: {range_ratio:.3f}",
+        })
+
+    output_sat = output["saturation"]
+    reference_sat = reference["saturation"]
+    median_ratio = float(reference_sat["median"] / max(output_sat["median"], 0.05))
+    p95_ratio = float(reference_sat["p95"] / max(output_sat["p95"], 0.05))
+    if median_ratio > 1.12 and p95_ratio < median_ratio - 0.12:
+        suggestions.append({
+            "dimension": "chroma",
+            "direction": "increase_muted",
+            "message": "increase vibrance rather than global saturation",
+            "evidence": f"median/P95 saturation ratios: {median_ratio:.3f}/{p95_ratio:.3f}",
+        })
+    elif median_ratio > 1.12 and p95_ratio > 1.08:
+        suggestions.append({
+            "dimension": "chroma",
+            "direction": "increase_global",
+            "message": "increase the single active chroma control within gamut limits",
+            "evidence": f"median/P95 saturation ratios: {median_ratio:.3f}/{p95_ratio:.3f}",
+        })
+    elif median_ratio < 0.88 or p95_ratio < 0.85:
+        suggestions.append({
+            "dimension": "chroma",
+            "direction": "decrease",
+            "message": "reduce the single active chroma control; preserve signature colors with vibrance when useful",
+            "evidence": f"median/P95 saturation ratios: {median_ratio:.3f}/{p95_ratio:.3f}",
+        })
+
+    output_color = np.asarray(output["channel_mean_srgb"], dtype=np.float64)
+    reference_color = np.asarray(reference["channel_mean_srgb"], dtype=np.float64)
+    output_chroma = output_color - float(np.mean(output_color))
+    reference_chroma = reference_color - float(np.mean(reference_color))
+    color_delta = reference_chroma - output_chroma
+    if float(np.linalg.norm(color_delta)) > 0.025:
+        channel = ("red", "green", "blue")[int(np.argmax(color_delta))]
+        suggestions.append({
+            "dimension": "color_balance",
+            "direction": f"toward_{channel}",
+            "message": f"move color balance toward {channel}; verify neutral objects and skin visually",
+            "evidence": f"normalized RGB tendency delta: {[round(float(value), 4) for value in color_delta]}",
+        })
+    return suggestions
 
 
 def equalized_luminance(rgb: np.ndarray) -> np.ndarray:
@@ -95,6 +194,10 @@ def strategy_warnings(recipe: dict, difference: dict[str, float]) -> list[str]:
         warnings.append("standard strategy produced a low visual delta; review intent or strengthen the grade")
     elif intensity == "bold" and (mean_delta < 0.03 or p95_delta < 0.07):
         warnings.append("bold strategy did not produce a clearly strong visual delta; strengthen or explain the limit")
+    elif intensity == "transformative" and mean_delta < 0.04 and p95_delta < 0.09:
+        warnings.append(
+            "transformative strategy produced neither a major global change nor a decisive localized change; revise the treatment contract or explain the limit"
+        )
     elif intensity == "conservative" and mean_delta > 0.10:
         warnings.append("conservative strategy produced a large visual delta; review the grade")
     return warnings
@@ -121,6 +224,7 @@ def main() -> int:
     result_analysis = analyze_array(result)
     reference_analysis = None
     target_match = {}
+    recommendations: list[dict[str, str]] = []
     if args.reference:
         reference_rgb, _, _ = load_image(args.reference)
         reference_analysis = analyze_array(reference_rgb)
@@ -129,9 +233,12 @@ def main() -> int:
             "conservative": 0.20,
             "standard": 0.40,
             "bold": 0.60,
+            "transformative": 0.75,
         }.get(recipe.get("strategy", {}).get("intensity"), 0.40)
         target_match["required_improvement_fraction"] = required_improvement
         target_match["passed"] = target_match["improvement_fraction"] >= required_improvement
+        if not target_match["passed"]:
+            recommendations.extend(reference_adjustment_suggestions(result_analysis, reference_analysis))
     warnings = []
     intent_warnings = []
     source_clip = source_analysis["clipping"]["any_channel_high_fraction"]
@@ -141,7 +248,13 @@ def main() -> int:
         warnings.append("high-channel clipping increased by more than 0.5 percentage points")
     source_black = source_analysis["clipping"]["near_black_fraction"]
     result_black = result_analysis["clipping"]["near_black_fraction"]
-    allowed_black = max(source_black, reference_analysis["clipping"]["near_black_fraction"] if reference_analysis else 0.0)
+    intentional_black = float(
+        recipe.get("quality_tolerances", {}).get("intentional_near_black_increase", 0.0)
+    )
+    allowed_black = max(
+        source_black + intentional_black,
+        reference_analysis["clipping"]["near_black_fraction"] if reference_analysis else 0.0,
+    )
     if result_black > allowed_black + 0.02:
         warnings.append("near-black pixels increased by more than 2 percentage points; review shadow detail")
     allowed_extreme = max(
@@ -157,6 +270,12 @@ def main() -> int:
         warnings.append("skin protection was enabled but no reliable skin candidate was detected")
     if skin_enabled and source_analysis["skin_candidate_fraction"] > 0.35:
         warnings.append("skin candidate mask covers more than 35 percent; visually review for false positives")
+        recommendations.append({
+            "dimension": "skin_protection",
+            "direction": "review_or_disable",
+            "message": "review the heuristic mask and reduce or disable it if warm non-skin materials are protected",
+            "evidence": f"candidate coverage: {source_analysis['skin_candidate_fraction']:.1%}",
+        })
 
     structure = gradient_metrics(source, result) if source.shape == result.shape else {}
     difference = difference_metrics(source, result) if source.shape == result.shape else {}
@@ -198,6 +317,7 @@ def main() -> int:
         "warnings": warnings,
         "preservation_warnings": preservation_warnings,
         "intent_warnings": intent_warnings,
+        "recommendations": recommendations,
         "structure": structure,
         "difference": difference,
         "target_match": target_match,
