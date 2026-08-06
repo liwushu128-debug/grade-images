@@ -55,6 +55,22 @@ def run_regression(manifest_path: Path, output_dir: Path) -> dict[str, Any]:
             failures.append(
                 f"distribution improvement {metrics['improvement_fraction']:.3f} is below {minimum:.3f}"
             )
+        component_keys = {
+            "tone": "tone_improvement_fraction",
+            "chroma": "chroma_improvement_fraction",
+            "global_color": "global_color_improvement_fraction",
+            "tonal_zone_color": "tonal_zone_color_improvement_fraction",
+        }
+        for component, metric_key in component_keys.items():
+            floor_key = f"minimum_{component}_improvement_fraction"
+            if floor_key not in case:
+                continue
+            component_minimum = float(case[floor_key])
+            if metrics[metric_key] < component_minimum:
+                failures.append(
+                    f"{component.replace('_', ' ')} improvement "
+                    f"{metrics[metric_key]:.3f} is below {component_minimum:.3f}"
+                )
         if structure["strong_edge_orientation_agreement"] < edge_limit:
             failures.append("strong-edge orientation agreement is below the case limit")
         if structure["new_strong_edge_fraction"] > new_edge_limit:

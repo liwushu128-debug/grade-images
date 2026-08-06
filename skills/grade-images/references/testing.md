@@ -56,13 +56,17 @@ Manifest format:
       "template": "../assets/recipes/neutral-correction.json",
       "strength": 0.9,
       "minimum_improvement_fraction": 0.4,
+      "minimum_tone_improvement_fraction": 0.3,
+      "minimum_chroma_improvement_fraction": 0.3,
+      "minimum_global_color_improvement_fraction": 0.2,
+      "minimum_tonal_zone_color_improvement_fraction": 0.2,
       "skin_protection": false
     }
   ]
 }
 ```
 
-Paths are relative to the manifest unless absolute. Set thresholds from a reviewed baseline, not from the desired answer. Include both directions as separate cases. A passing metric does not replace visual review.
+Paths are relative to the manifest unless absolute. Set thresholds from a reviewed baseline, not from the desired answer. Use component floors whenever tone, chroma, global color, or tonal-zone color is part of the treatment contract; an overall improvement score must not hide regression in one required component. Include both directions as separate cases. A passing metric does not replace visual review.
 
 ## Search within a chosen reference intensity
 
@@ -83,6 +87,11 @@ Select the lowest reference-distribution distance among candidates that pass cli
 - Treat a direction that improves while its reverse regresses as a failed bidirectional change.
 - Record recipes and reports, but never commit private source images.
 - Add synthetic fixtures for engine invariants and use private photos only for local perceptual coverage.
+- Run every bundled preset across a compact synthetic matrix containing grayscale, warm/cool separation, low-light, high-contrast highlight, and near-neutral cases. Require deterministic finite output and intensity-appropriate structural limits for every combination; treat aesthetic warnings as routing evidence rather than hiding them.
 - Benchmark end-to-end preview time separately from model reasoning time. If local render and comparison take seconds but the task takes minutes, optimize preset routing and iteration count rather than weakening image processing.
-- For every schema 1.2 hue-range case, test circular hue wrapping, smooth boundary response, near-neutral exclusion, deterministic output, and rejection of semantic-mask or unknown-operation fields.
+- For every schema 1.2 hue-range case, test circular hue wrapping, smooth boundary response, near-neutral exclusion, deterministic output, range-order independence, and rejection of semantic-mask or unknown-operation fields.
+- For film-color routing, test generic three-way variants, deterministic specific-profile selection, color-only recipes with no `effects` object, explicit reporting of forbidden effect terms, visually distinct standard outputs, and absence of product-specific names from the catalog and bundled profiles.
+- For classic-documentary routing, test the generic two-way variant route, scene-aware selection only in the presence of documentary language, deterministic named-profile selection, color-only recipes with no `effects` object, explicit reporting of texture/detail effect terms, visually distinct outputs, and preservation of vivid signature colors.
+- For schema 1.3 texture refinement, require explicit permission, retain color-only defaults, reject every repair/generative/unsupported texture key, cap parameters, verify deterministic luminance-only output sharpening, exercise skin/noise protection, and warn above the edge/high-frequency limits. Confirm that every pre-1.3 bundled recipe renders exactly as before.
 - For transformative private cases, record the treatment contract beside the manifest and review the named must-be-obvious outcome visually. Distribution improvement alone cannot prove that the requested color family moved correctly.
+- For RAW, test a real supported DNG plus at least two proprietary camera families when redistributable samples are available. Always test the missing-backend path, unsupported-camera failure, 16-bit full development, 8-bit half-size preview, orientation, valid-camera, identity-camera/daylight-fallback and decoder-default white-balance routes, unchanged source hash, output encoding, stage timings, and manifest provenance. Run `--require-camera-wb` against a known fallback case and require it to fail. Never commit private RAW samples.

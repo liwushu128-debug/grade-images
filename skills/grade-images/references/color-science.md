@@ -4,7 +4,7 @@
 
 Apply operations in this order:
 
-1. decode to RGB plus optional alpha and convert a valid embedded ICC profile to sRGB;
+1. decode JPEG/PNG to RGB plus optional alpha and convert a valid embedded ICC profile to sRGB, or deterministically demosaic RAW with the recorded RAW development contract;
 2. convert encoded sRGB values to linear-light floating point; if no profile exists, explicitly record the sRGB assumption;
 3. apply source-specific correction;
 4. apply the reusable creative look;
@@ -24,6 +24,8 @@ Keep correction source-specific. Exposure and white balance frequently differ ac
 - Keep black/white mapping conservative for encoded images; do not force every image to use the full numeric range. Apply black/white mapping and highlight roll-off through luminance-based RGB scaling so these operations do not create colored channel clipping.
 - Use monotonic tone curves so tonal ordering is not inverted.
 - Treat a source near-black fraction above 20% as a low-light warning. Preview any positive S-curve carefully and default its strength to zero when it pushes near-black coverage up by more than two percentage points.
+- During automatic reference matching, suppress a positive S-curve when source near-black coverage already exceeds 20%. Also suppress newly derived highlight roll-off while lifting toward a reference whose P95 luminance is at least as high as the source; otherwise the contrast controls can counteract the requested brightening.
+- Fit reference-match exposure to P05, P25, P50, P75, and P95 together, using a luminance-weighted median of their scale ratios. A median-only estimate can match the dark majority while pushing sparse native highlights far past the reference; the multi-landmark fit keeps dark-scene highlights bounded.
 - Use highlight roll-off to compress bright values, not to claim recovery of clipped information.
 - Apply CDL in linear light. Clamp negative bases before power operations.
 - Scale split toning to the selected intensity while avoiding a uniform global cast. Bold grades may use stronger tonal-zone separation, but correction and look must remain distinct.

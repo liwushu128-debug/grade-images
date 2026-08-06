@@ -13,6 +13,8 @@ Fail the result when:
 - rendering produces non-finite pixel values.
 - an enabled effect lacks explicit consent or requests anything other than source-derived glow;
 - an effect creates a detached synthetic light shape or visible light with no supporting source highlight.
+- texture permission is enabled without schema 1.3, `mode: refine`, an explicit request, or the exact output-sharpen whitelist;
+- a texture recipe requests repair, denoise, deblur, clarity, dehaze, grain, blur, local contrast, synthetic detail, or another unsupported operator.
 
 ## Warnings
 
@@ -25,10 +27,14 @@ Warn when:
 - the grade creates strong differences at a protection-mask boundary;
 - JPEG output is requested;
 - metadata or ICC data cannot be preserved in the chosen format.
+- RAW white balance used `daylight` or `decoder_default` fallback, or the neutral development is visually implausible; review the recorded statuses and preview before grading.
+- the installed LibRaw version may not fully support the source camera or compression variant.
 - a `standard`, `bold`, or `transformative` strategy produces too little visual difference for the selected intensity;
 - a `conservative` strategy produces an unexpectedly large difference.
 - a reference-guided output misses the intensity-specific distribution-improvement target;
 - source glow excessively obscures important high-frequency detail or creates a new strong edge.
+- output sharpening raises mean edge energy by more than 22%, P90 edge energy by more than 25%, or high-frequency variation by more than 25%;
+- output sharpening reveals halos, doubled contours, amplified noise/JPEG blocks, or roughened protected skin.
 
 Treat low-difference warnings as intent failures, not preservation successes. A structurally safe result can still fail the user's aesthetic request.
 
@@ -42,7 +48,7 @@ Raw SSIM is not a preservation proof because legitimate exposure and tone change
 - newly introduced strong edges in formerly smooth regions;
 - deterministic output hashes for repeated identical runs.
 
-Use these metrics as alarms. The primary guarantee remains the strict operation whitelist and an engine that lacks geometry, synthesis, and texture operators.
+Use these metrics as alarms. The primary guarantee remains the strict operation whitelist and an engine that lacks geometry, synthesis, repair, and arbitrary texture operators. Schema 1.3 adds only bounded source-derived output sharpening after explicit permission.
 
 Source glow is a bounded exception that operates only on an extracted low-frequency light layer. Inspect the unblurred base and the final output at 100%; its presence does not relax geometry, identity, object, text, or content preservation.
 
@@ -50,7 +56,7 @@ Source glow is a bounded exception that operates only on an extracted low-freque
 
 Record mean absolute RGB difference, P95 per-pixel RGB difference, mean absolute luminance difference, and the fraction of pixels changing by at least `2/255`. These are not beauty scores. Use them only to catch a mismatch between the selected intensity and a nearly unchanged output.
 
-For transformative hue-range treatments, warn for insufficient magnitude only when both the global mean RGB delta is below `0.04` and P95 per-pixel delta is below `0.09`. A high localized P95 delta may represent the exact requested color-family transformation in a mostly dark or neutral frame. Never increase exposure, contrast, or unrelated color merely to lift the global mean above a threshold.
+For broad standard treatments, require at least a `0.018` mean RGB delta and `0.045` P95 per-pixel delta before treating the result as clearly visible. For broad bold treatments, use `0.035` mean and `0.075` P95 as warning floors. For broad transformative treatments, use `0.04` mean and `0.09` P95. A hue-range recipe may satisfy the intensity through a decisive localized change, so waive the global-mean floor but retain the corresponding P95 floor. Never increase exposure, contrast, or unrelated color merely to lift a metric above a threshold.
 
 ## Reference-aware checks
 

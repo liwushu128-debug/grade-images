@@ -13,6 +13,8 @@ from compare import (
     reference_adjustment_suggestions,
     reference_match_metrics,
     strategy_warnings,
+    texture_metrics,
+    texture_warnings,
 )
 from grade_core import (
     RecipeError,
@@ -45,6 +47,7 @@ def _quality_report(
     reference_analysis = analyze_array(reference) if reference is not None else None
     difference = difference_metrics(source, result)
     structure = gradient_metrics(source, result)
+    texture = texture_metrics(source, result)
     warnings = strategy_warnings(recipe, difference)
     recommendations = []
 
@@ -78,6 +81,7 @@ def _quality_report(
         warnings.append(
             f"new strong-edge or glow-boundary gradients exceed {new_edge_limit:.0%} of pixels"
         )
+    warnings.extend(texture_warnings(recipe, texture))
 
     target_match = {}
     if reference_analysis:
@@ -99,6 +103,7 @@ def _quality_report(
         "warnings": warnings,
         "recommendations": recommendations,
         "structure": structure,
+        "texture": texture,
         "difference": difference,
         "target_match": target_match,
         "source": source_analysis,
@@ -139,7 +144,9 @@ def render_preview(
         raise RecipeError("preview output must not overwrite the input")
 
     save_started = time.perf_counter()
-    save_image(preview_path, result, alpha, recipe, metadata)
+    # Preview artifacts favor faster lossless PNG encoding. Final renders keep
+    # the renderer's smaller default compression level.
+    save_image(preview_path, result, alpha, recipe, metadata, png_compress_level=2)
     shutil.copyfile(recipe_path, recipe_copy)
     report = _quality_report(source, result, recipe, reference=reference)
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
@@ -168,6 +175,10 @@ def render_preview(
         "quality_report": str(report_path.resolve()),
         "quality_status": report["status"],
         "max_size": max_size,
+        "source_size": list(metadata["source_size"]),
+        "color_management": metadata["color_management"],
+        "raw_development": metadata.get("raw_development"),
+        "source_warnings": metadata["warnings"],
         "render_diagnostics": diagnostics,
         "timing_seconds": {
             "load": round(load_elapsed, 4),

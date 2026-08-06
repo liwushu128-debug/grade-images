@@ -1,0 +1,48 @@
+{
+  "schema_version": "1.3",
+  "intent": "Explicit, bounded output sharpening for a source that is already correctly focused and does not need repair; add no detail, denoise, deblur, clarity, dehaze, grain, or synthetic texture",
+  "strategy": {"intensity": "conservative", "style": "technical", "selection": "explicit"},
+  "preservation": {
+    "mode": "strict",
+    "allow_geometry_changes": false,
+    "allow_texture_changes": true,
+    "allow_generative_changes": false
+  },
+  "correction": {
+    "exposure_ev": 0.0,
+    "white_balance": {"rgb_gains": [1.0, 1.0, 1.0]},
+    "black_point": 0.0,
+    "white_point": 1.0,
+    "highlight_rolloff": 0.0
+  },
+  "look": {
+    "tone_curve": {"strength": 0.0},
+    "cdl": {
+      "slope": [1.0, 1.0, 1.0],
+      "offset": [0.0, 0.0, 0.0],
+      "power": [1.0, 1.0, 1.0],
+      "saturation": 1.0
+    },
+    "split_tone": {
+      "shadows": [0.5, 0.5, 0.5],
+      "highlights": [0.5, 0.5, 0.5],
+      "balance": 0.0,
+      "strength": 0.0
+    }
+  },
+  "texture": {
+    "permission": "source-derived-only",
+    "selection": "explicit-user",
+    "mode": "refine",
+    "output_sharpen": {
+      "enabled": true,
+      "amount": 0.12,
+      "radius_pixels": 0.8,
+      "threshold": 0.012,
+      "protect_skin": true,
+      "protect_noise": true
+    }
+  },
+  "protection": {"skin": {"enabled": true, "strength": 0.7}},
+  "output": {"format": "png", "quality": 95, "profile": "sRGB", "preserve_metadata": true}
+}

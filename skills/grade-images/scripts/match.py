@@ -33,6 +33,15 @@ def bounded_geometric_normalize(values: np.ndarray, low: float, high: float) -> 
     return np.exp(np.clip(logs + (left + right) / 2.0, lower_log, upper_log))
 
 
+def _weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
+    order = np.argsort(values)
+    sorted_values = values[order]
+    sorted_weights = weights[order]
+    midpoint = float(np.sum(sorted_weights)) * 0.5
+    index = int(np.searchsorted(np.cumsum(sorted_weights), midpoint, side="left"))
+    return float(sorted_values[min(index, len(sorted_values) - 1)])
+
+
 def _percentile_zone_color(encoded_rgb: np.ndarray, linear_luma: np.ndarray, low: float, high: float) -> np.ndarray:
     low_value, high_value = np.percentile(linear_luma, [low, high])
     mask = (linear_luma >= low_value) & (linear_luma <= high_value)
@@ -72,6 +81,7 @@ def image_match_stats(encoded_rgb: np.ndarray) -> dict[str, Any]:
         "shadow_color": _percentile_zone_color(encoded_rgb, luma, 8, 32),
         "midtone_color": _percentile_zone_color(encoded_rgb, luma, 34, 66),
         "highlight_color": _percentile_zone_color(encoded_rgb, luma, 68, 92),
+        "near_black_fraction": float(np.mean(luma <= 1.0 / 255.0)),
     }
 
 
@@ -107,11 +117,25 @@ def derive_match_recipe(
     if skin_protection is not None:
         recipe.setdefault("protection", {}).setdefault("skin", {})["enabled"] = skin_protection
 
-    exposure = math.log2(max(reference["luma"]["p50"], 1e-6) / max(source["luma"]["p50"], 1e-6))
+    # A median-only exposure estimate can badly overdrive sparse highlights in
+    # low-light scenes. Fit one global scale to several tonal landmarks instead.
+    # Weighting by landmark luminance approximates the absolute-error objective
+    # used by reference comparison while retaining shadow samples in the fit.
+    exposure_percentiles = ("p05", "p25", "p50", "p75", "p95")
+    exposure_ratios = np.asarray([
+        reference["luma"][key] / max(source["luma"][key], 1e-6)
+        for key in exposure_percentiles
+    ], dtype=np.float64)
+    exposure_weights = np.asarray([
+        max(source["luma"][key], reference["luma"][key], 1e-6)
+        for key in exposure_percentiles
+    ], dtype=np.float64)
+    exposure_scale = _weighted_median(exposure_ratios, exposure_weights)
+    raw_exposure = math.log2(max(exposure_scale, 1e-6))
     # Make match strength a real safety envelope: a 0.4 match may alter
     # exposure by at most 0.4 EV. This prevents a dark reference with unrelated
     # lighting geometry from turning a normal scene into a low-light scene.
-    exposure = float(np.clip(exposure * strength, -strength, strength))
+    exposure = float(np.clip(raw_exposure * strength, -strength, strength))
     gains = (reference["balance"] / source["balance"]) ** strength
     gains = bounded_geometric_normalize(gains, 0.8, 1.25)
 
@@ -121,8 +145,15 @@ def derive_match_recipe(
     zone_contrast_log = float(np.median(np.log2(np.clip(
         [contrast_ratio, shadow_span_ratio, highlight_span_ratio], 1e-6, None
     ))))
-    curve_strength = float(np.clip(zone_contrast_log * 0.38 * strength, -0.6, 0.6))
-    highlight_compression = max(0.0, math.log2(max(shadow_span_ratio, 1e-6) / max(highlight_span_ratio, 1e-6)))
+    raw_curve_strength = float(np.clip(zone_contrast_log * 0.38 * strength, -0.6, 0.6))
+    low_light_curve_suppressed = source["near_black_fraction"] > 0.20 and raw_curve_strength > 0.0
+    curve_strength = 0.0 if low_light_curve_suppressed else raw_curve_strength
+    raw_highlight_compression = max(
+        0.0,
+        math.log2(max(shadow_span_ratio, 1e-6) / max(highlight_span_ratio, 1e-6)),
+    )
+    lifting_highlights = exposure > 0.0 and reference["luma"]["p95"] >= source["luma"]["p95"]
+    highlight_compression = 0.0 if lifting_highlights else raw_highlight_compression
     saturation_ratios = np.asarray([
         reference["saturation_p25"] / max(source["saturation_p25"], 0.05),
         reference["saturation_median"] / max(source["saturation_median"], 0.05),
@@ -188,11 +219,18 @@ def derive_match_recipe(
         "strategy_intensity": intensity,
         "exposure_delta_ev": exposure,
         "exposure_limit_ev": strength,
+        "raw_exposure_delta_ev": raw_exposure,
+        "exposure_fit_percentiles": list(exposure_percentiles),
+        "exposure_fit_ratios": [float(value) for value in exposure_ratios],
         "white_balance_rgb_gains": [float(value) for value in gains],
         "contrast_ratio": contrast_ratio,
         "shadow_span_ratio": shadow_span_ratio,
         "highlight_span_ratio": highlight_span_ratio,
         "highlight_compression_added": correction["highlight_rolloff"] - base_rolloff,
+        "highlight_compression_suppressed_while_lifting": lifting_highlights,
+        "source_near_black_fraction": source["near_black_fraction"],
+        "low_light_positive_curve_suppressed": low_light_curve_suppressed,
+        "raw_tone_curve_strength": raw_curve_strength,
         "tone_curve_strength": curve_strength,
         "saturation_ratio": saturation_ratio,
         "saturation_distribution_ratios": [float(value) for value in saturation_ratios],

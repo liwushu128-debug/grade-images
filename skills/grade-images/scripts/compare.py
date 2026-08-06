@@ -172,6 +172,51 @@ def gradient_metrics(source: np.ndarray, output: np.ndarray) -> dict[str, float]
     }
 
 
+def _box_blur_3x3(channel: np.ndarray) -> np.ndarray:
+    padded = np.pad(channel, 1, mode="edge")
+    return sum(
+        padded[y:y + channel.shape[0], x:x + channel.shape[1]]
+        for y in range(3)
+        for x in range(3)
+    ) / 9.0
+
+
+def texture_metrics(source: np.ndarray, output: np.ndarray) -> dict[str, float]:
+    src = equalized_luminance(source)
+    dst = equalized_luminance(output)
+    sy, sx = np.gradient(src)
+    dy, dx = np.gradient(dst)
+    sm = np.hypot(sx, sy)
+    dm = np.hypot(dx, dy)
+    source_highpass = src - _box_blur_3x3(src)
+    output_highpass = dst - _box_blur_3x3(dst)
+    return {
+        "mean_gradient_ratio": round(float(np.mean(dm) / max(float(np.mean(sm)), 1e-8)), 6),
+        "p90_gradient_ratio": round(
+            float(np.percentile(dm, 90) / max(float(np.percentile(sm, 90)), 1e-8)),
+            6,
+        ),
+        "highpass_std_ratio": round(
+            float(np.std(output_highpass) / max(float(np.std(source_highpass)), 1e-8)),
+            6,
+        ),
+    }
+
+
+def texture_warnings(recipe: dict, metrics: dict[str, float]) -> list[str]:
+    enabled = recipe.get("texture", {}).get("output_sharpen", {}).get("enabled", False)
+    if not enabled:
+        return []
+    warnings = []
+    if metrics["mean_gradient_ratio"] > 1.22:
+        warnings.append("output sharpening increased mean edge energy by more than 22 percent")
+    if metrics["p90_gradient_ratio"] > 1.25:
+        warnings.append("output sharpening increased P90 edge energy by more than 25 percent")
+    if metrics["highpass_std_ratio"] > 1.25:
+        warnings.append("output sharpening increased high-frequency variation by more than 25 percent")
+    return warnings
+
+
 def difference_metrics(source: np.ndarray, output: np.ndarray) -> dict[str, float]:
     absolute = np.abs(output.astype(np.float32) - source.astype(np.float32))
     pixel_delta = np.mean(absolute, axis=2)
@@ -189,12 +234,19 @@ def strategy_warnings(recipe: dict, difference: dict[str, float]) -> list[str]:
     intensity = recipe.get("strategy", {}).get("intensity")
     mean_delta = difference["mean_absolute_rgb_delta"]
     p95_delta = difference["p95_pixel_rgb_delta"]
+    localized_color_contract = bool(recipe.get("look", {}).get("hue_ranges"))
     warnings = []
-    if intensity == "standard" and mean_delta < 0.015 and p95_delta < 0.04:
+    if intensity == "standard" and (
+        p95_delta < 0.045 or (not localized_color_contract and mean_delta < 0.018)
+    ):
         warnings.append("standard strategy produced a low visual delta; review intent or strengthen the grade")
-    elif intensity == "bold" and (mean_delta < 0.03 or p95_delta < 0.07):
+    elif intensity == "bold" and (
+        p95_delta < 0.075 or (not localized_color_contract and mean_delta < 0.035)
+    ):
         warnings.append("bold strategy did not produce a clearly strong visual delta; strengthen or explain the limit")
-    elif intensity == "transformative" and mean_delta < 0.04 and p95_delta < 0.09:
+    elif intensity == "transformative" and (
+        p95_delta < 0.09 or (not localized_color_contract and mean_delta < 0.04)
+    ):
         warnings.append(
             "transformative strategy produced neither a major global change nor a decisive localized change; revise the treatment contract or explain the limit"
         )
@@ -278,6 +330,7 @@ def main() -> int:
         })
 
     structure = gradient_metrics(source, result) if source.shape == result.shape else {}
+    texture = texture_metrics(source, result) if source.shape == result.shape else {}
     difference = difference_metrics(source, result) if source.shape == result.shape else {}
     if difference:
         strategy_items = strategy_warnings(recipe, difference)
@@ -299,6 +352,7 @@ def main() -> int:
         warnings.append(
             f"new strong-edge or glow-boundary gradients exceed {new_edge_limit:.0%} of pixels"
         )
+    warnings.extend(texture_warnings(recipe, texture))
 
     preservation_warnings = [item for item in warnings if item not in intent_warnings]
     preservation_status = "fail" if hard_failures else ("warn" if preservation_warnings else "pass")
@@ -319,6 +373,7 @@ def main() -> int:
         "intent_warnings": intent_warnings,
         "recommendations": recommendations,
         "structure": structure,
+        "texture": texture,
         "difference": difference,
         "target_match": target_match,
         "source": source_analysis,

@@ -29,6 +29,7 @@ def main() -> int:
                 "has_exif": metadata["exif"] is not None,
                 "working_profile": metadata["working_profile"],
                 "color_management": metadata["color_management"],
+                "raw_development": metadata.get("raw_development"),
                 "warnings": metadata["warnings"],
                 "measurements": analyze_array(rgb),
             }

@@ -1,0 +1,51 @@
+{
+  "schema_version": "1.2",
+  "intent": "Sample-informed archival documentary baseline with softened contrast, warm cream highlights, olive-cyan shadows, restrained peak chroma, and no grain, dust, blur, vignette, sharpening, or geometry change",
+  "strategy": {"intensity": "standard", "style": "custom", "selection": "template"},
+  "preservation": {
+    "mode": "strict",
+    "allow_geometry_changes": false,
+    "allow_texture_changes": false,
+    "allow_generative_changes": false
+  },
+  "correction": {
+    "exposure_ev": 0.0,
+    "white_balance": {"rgb_gains": [1.0, 1.0, 1.0]},
+    "black_point": 0.0,
+    "white_point": 1.02,
+    "highlight_rolloff": 0.42
+  },
+  "look": {
+    "tone_curve": {"strength": -0.35},
+    "cdl": {
+      "slope": [1.055, 1.011, 0.912],
+      "offset": [0.004, 0.006, 0.002],
+      "power": [1.033, 1.0, 1.077],
+      "saturation": 1.0
+    },
+    "vibrance": 0.08,
+    "split_tone": {
+      "shadows": [0.4, 0.52, 0.44],
+      "highlights": [0.76, 0.63, 0.42],
+      "balance": 0.08,
+      "strength": 0.06
+    },
+    "hue_ranges": [
+      {
+        "label": "Established cool colors toward aged cyan-green",
+        "center_degrees": 215.0,
+        "width_degrees": 100.0,
+        "feather_degrees": 28.0,
+        "hue_shift_degrees": -25.0,
+        "saturation_scale": 0.84,
+        "luminance_scale": 0.98,
+        "saturation_range": [0.14, 1.0],
+        "luminance_range": [0.04, 0.96],
+        "range_feather": 0.1,
+        "strength": 0.45
+      }
+    ]
+  },
+  "protection": {"skin": {"enabled": true, "strength": 0.74}},
+  "output": {"format": "png", "quality": 95, "profile": "sRGB", "preserve_metadata": true}
+}

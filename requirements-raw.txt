@@ -1,0 +1,2 @@
+-r requirements.txt
+-r skills/grade-images/requirements-raw.txt

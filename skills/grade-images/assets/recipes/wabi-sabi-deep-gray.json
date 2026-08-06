@@ -1,0 +1,79 @@
+{
+  "schema_version": "1.2",
+  "intent": "Provide a source-safe wabi-sabi deep-gray baseline with an asphalt-charcoal direction, restrained cool and miscellaneous colors, comparatively warmer focal accents, controlled highlights, and retained shadow texture without sharpening, grain, overlays, or synthetic lighting; adjust exposure after source analysis",
+  "strategy": {
+    "intensity": "standard",
+    "style": "custom",
+    "selection": "template"
+  },
+  "preservation": {
+    "mode": "strict",
+    "allow_geometry_changes": false,
+    "allow_texture_changes": false,
+    "allow_generative_changes": false
+  },
+  "correction": {
+    "exposure_ev": -0.06,
+    "white_balance": {"rgb_gains": [0.975, 1.0, 1.03]},
+    "black_point": 0.0,
+    "white_point": 1.02,
+    "highlight_rolloff": 0.35
+  },
+  "look": {
+    "tone_curve": {"strength": 0.18},
+    "cdl": {
+      "slope": [0.985, 0.995, 1.01],
+      "offset": [0.0, 0.0, 0.0],
+      "power": [1.005, 1.003, 1.0],
+      "saturation": 1.0
+    },
+    "vibrance": -0.32,
+    "hue_ranges": [
+      {
+        "label": "restrain cool and miscellaneous colors into the gray base",
+        "center_degrees": 225.0,
+        "width_degrees": 150.0,
+        "feather_degrees": 38.0,
+        "hue_shift_degrees": 0.0,
+        "saturation_scale": 0.58,
+        "luminance_scale": 0.98,
+        "saturation_range": [0.07, 1.0],
+        "luminance_range": [0.015, 0.94],
+        "range_feather": 0.055,
+        "strength": 0.82
+      },
+      {
+        "label": "retain warm red amber yellow wood and earth as relative focal colors",
+        "center_degrees": 42.0,
+        "width_degrees": 82.0,
+        "feather_degrees": 24.0,
+        "hue_shift_degrees": -2.0,
+        "saturation_scale": 1.24,
+        "luminance_scale": 1.035,
+        "saturation_range": [0.045, 0.92],
+        "luminance_range": [0.018, 0.88],
+        "range_feather": 0.045,
+        "strength": 0.76
+      }
+    ],
+    "split_tone": {
+      "shadows": [0.43, 0.455, 0.49],
+      "highlights": [0.64, 0.59, 0.52],
+      "balance": 0.2,
+      "strength": 0.065
+    }
+  },
+  "effects": {
+    "permission": "none",
+    "selection": "not-required",
+    "source_glow": {
+      "enabled": false,
+      "threshold": 0.72,
+      "knee": 0.1,
+      "radius_fraction": 0.012,
+      "strength": 0.0
+    }
+  },
+  "protection": {"skin": {"enabled": false, "strength": 0.68}},
+  "output": {"format": "png", "quality": 95, "profile": "sRGB", "preserve_metadata": true}
+}

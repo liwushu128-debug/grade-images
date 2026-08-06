@@ -1,0 +1,106 @@
+{
+  "schema_version": "1.0",
+  "default_intensity": "standard",
+  "generic_route": {
+    "mode": "variants",
+    "profiles": [
+      "classic-negative",
+      "daylight-disposable",
+      "cinematic-print"
+    ]
+  },
+  "profiles": [
+    {
+      "id": "classic-negative",
+      "title": "Classic Negative",
+      "recipe": "../assets/recipes/classic-negative-standard.json",
+      "priority": 30,
+      "prompt_terms": [
+        "经典负片",
+        "负片感",
+        "彩色负片",
+        "柔和负片",
+        "classic negative",
+        "color negative",
+        "soft film"
+      ],
+      "scene_terms": ["人像", "日常", "街拍", "portrait", "everyday", "street"],
+      "contract": {
+        "tone": "soft highlight roll-off with a gently anchored black point",
+        "color": "earthy warm mids with restrained cool undertones",
+        "chroma": "moderately vivid muted colors without fluorescent peaks",
+        "effects": "absent"
+      }
+    },
+    {
+      "id": "daylight-disposable",
+      "title": "Daylight Disposable",
+      "recipe": "../assets/recipes/daylight-disposable-standard.json",
+      "priority": 40,
+      "prompt_terms": [
+        "一次性胶片",
+        "一次性相机",
+        "胶片快照",
+        "晴天胶片",
+        "闪光快照",
+        "disposable camera",
+        "daylight disposable",
+        "film snapshot",
+        "flash snapshot"
+      ],
+      "scene_terms": ["晴天", "户外", "绿植", "派对", "闪光灯", "daylight", "outdoor", "foliage", "party", "flash"],
+      "contract": {
+        "tone": "punchy snapshot contrast with controlled highlights",
+        "color": "warm highlights, fresh green-biased shadows, and lively daylight color",
+        "chroma": "clear but bounded color separation",
+        "effects": "absent"
+      }
+    },
+    {
+      "id": "cinematic-print",
+      "title": "Cinematic Print",
+      "recipe": "../assets/recipes/cinematic-print-standard.json",
+      "priority": 35,
+      "prompt_terms": [
+        "电影胶片",
+        "电影印片",
+        "印片感",
+        "电影胶片感",
+        "cinematic film",
+        "film print",
+        "print film",
+        "motion picture film"
+      ],
+      "scene_terms": ["夜景", "室内", "叙事", "night", "interior", "narrative"],
+      "contract": {
+        "tone": "dense midtones with protected highlight separation",
+        "color": "cool shadows and warm highlights without a uniform cast",
+        "chroma": "restrained print-like saturation",
+        "effects": "absent"
+      }
+    }
+  ],
+  "generic_terms": [
+    "胶片感",
+    "胶片色彩",
+    "胶片风格",
+    "复古胶片",
+    "film look",
+    "film-like",
+    "film style",
+    "analog look",
+    "analogue look"
+  ],
+  "texture_terms": {
+    "output_sharpen": ["输出锐化", "轻微锐化", "锐化", "output sharpen", "sharpen"]
+  },
+  "forbidden_effect_terms": {
+    "grain": ["颗粒", "胶片颗粒", "grain", "film grain"],
+    "vignette": ["暗角", "vignette"],
+    "blur": ["柔焦", "模糊", "soft focus", "blur"],
+    "light_leak": ["漏光", "light leak"],
+    "distortion": ["畸变", "distortion"],
+    "clarity_dehaze": ["清晰度", "去雾", "微对比", "clarity", "dehaze", "microcontrast"],
+    "repair": ["降噪", "去噪", "修复", "去模糊", "超分辨率", "denoise", "repair", "deblur", "super resolution"]
+  }
+}

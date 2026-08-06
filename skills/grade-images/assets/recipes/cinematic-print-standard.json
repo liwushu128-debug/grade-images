@@ -1,0 +1,40 @@
+{
+  "schema_version": "1.1",
+  "intent": "Cinematic print color baseline with dense midtones, cool-shadow and warm-highlight separation, restrained chroma, and no grain, vignette, blur, light leak, sharpening, or geometry change",
+  "strategy": {
+    "intensity": "standard",
+    "style": "cinematic",
+    "selection": "template"
+  },
+  "preservation": {
+    "mode": "strict",
+    "allow_geometry_changes": false,
+    "allow_texture_changes": false,
+    "allow_generative_changes": false
+  },
+  "correction": {
+    "exposure_ev": 0.0,
+    "white_balance": {"rgb_gains": [1.0, 1.0, 1.0]},
+    "black_point": 0.003,
+    "white_point": 1.02,
+    "highlight_rolloff": 0.4
+  },
+  "look": {
+    "tone_curve": {"strength": 0.53},
+    "cdl": {
+      "slope": [1.008, 0.998, 0.996],
+      "offset": [0.0, 0.001, 0.004],
+      "power": [0.995, 1.0, 1.008],
+      "saturation": 1.0
+    },
+    "vibrance": -0.12,
+    "split_tone": {
+      "shadows": [0.29, 0.43, 0.55],
+      "highlights": [0.76, 0.57, 0.32],
+      "balance": 0.06,
+      "strength": 0.1
+    }
+  },
+  "protection": {"skin": {"enabled": true, "strength": 0.68}},
+  "output": {"format": "png", "quality": 95, "profile": "sRGB", "preserve_metadata": true}
+}

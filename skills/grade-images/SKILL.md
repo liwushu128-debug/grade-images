@@ -1,6 +1,6 @@
 ---
 name: grade-images
-description: Analyze, correct, match, and batch color-grade JPEG and PNG photographs with a deterministic, non-generative pipeline, plus explicitly approved source-derived highlight diffusion. Use whenever the user asks to color grade, color correct, fix exposure or white balance, match a reference image, create a cinematic, vivid, dreamy, soft-glow, or film-like look, make a photo set cohesive, or apply reproducible image treatment without changing geometry, identity, facial features, objects, text, or scene content.
+description: Analyze, develop, correct, match, and batch color-grade camera RAW, DNG, JPEG, and PNG photographs with a deterministic, non-generative pipeline, plus explicitly approved source-derived highlight diffusion and bounded output sharpening. Use whenever the user asks to process RAW photos, color grade, color correct, fix exposure or white balance, match a reference image, create a cinematic, vivid, dreamy, documentary, soft-glow, or film-like look, make a photo set cohesive, or explicitly sharpen an already focused photo without repair, generation, geometry, identity, facial-feature, object, text, or scene-content changes.
 ---
 
 # Grade Images
@@ -19,9 +19,19 @@ Create reproducible photo color grades while preserving spatial structure, ident
 - Never claim to recover detail that is clipped in an encoded JPEG or PNG.
 - Render a low-resolution preview before a full batch when the requested look is subjective.
 - Save the exact recipe beside every final result.
-- Fail closed when a recipe contains an unknown or texture-changing operation.
+- Keep texture unchanged by default. Never infer sharpening from a style, reference, intensity, or prior task.
+- Allow only schema 1.3 bounded output sharpening after an explicit user request; fail closed on every other texture-changing operation.
+- Never add denoise, deblur, restoration, super-resolution, clarity, dehaze, grain, blur, local contrast, synthetic detail, or defect repair.
 
-Read [preservation.md](references/preservation.md) before rendering. Read [recipe-schema.md](references/recipe-schema.md) before authoring or modifying a recipe. Read [intensity-strategies.md](references/intensity-strategies.md) before interpreting a subjective look or strength request. Read [controlled-light-effects.md](references/controlled-light-effects.md) whenever the prompt or reference may require glow, diffusion, haze, dreaminess, sacred light, or another optical-light quality. Read [quality-gates.md](references/quality-gates.md) before accepting final outputs. Read [testing.md](references/testing.md) before creating multi-variant previews or regression cases. For color decisions and parameter interpretation, read [color-science.md](references/color-science.md).
+Read [preservation.md](references/preservation.md) before rendering. Read [recipe-schema.md](references/recipe-schema.md) before authoring or modifying a recipe. Read [intensity-strategies.md](references/intensity-strategies.md) before interpreting a subjective look or strength request. Read [wabi-sabi-deep-gray.md](references/wabi-sabi-deep-gray.md) when the prompt asks for `侘寂`, `侘寂深灰`, `深黑灰`, `沥青灰`, a dark-gray minimalist look, warm accents against desaturated cool surroundings, or an equivalent low-key style. Read [controlled-light-effects.md](references/controlled-light-effects.md) whenever the prompt or reference may require glow, diffusion, haze, dreaminess, sacred light, or another optical-light quality. Read [quality-gates.md](references/quality-gates.md) before accepting final outputs. Read [testing.md](references/testing.md) before creating multi-variant previews or regression cases. For color decisions and parameter interpretation, read [color-science.md](references/color-science.md).
+
+Read [texture-refinement.md](references/texture-refinement.md) whenever the user explicitly requests sharpening, output sharpening, or texture refinement. Do not read a reference image as permission for texture processing.
+
+Read [film-color-routing.md](references/film-color-routing.md) whenever the prompt asks for `胶片感`, `胶片风格`, a negative-film, disposable-camera, film-print, analog, or equivalent film-color look. Run `scripts/route_film.py` before selecting or authoring that look.
+
+Read [classic-documentary.md](references/classic-documentary.md) whenever the prompt asks for `经典纪实`, `纪实摄影调色`, `彩色纪实`, archival documentary, vivid documentary, or an equivalent documentary-color look. Run `scripts/route_documentary.py` before selecting or authoring that look.
+
+For camera RAW or DNG input, also read [raw-processing.md](references/raw-processing.md) before opening the file.
 
 ## Choose a mode
 
@@ -37,11 +47,11 @@ Do not treat identical parameters as perceptual consistency. For a batch, keep p
 ## Preflight
 
 1. Locate the skill directory and use its bundled scripts by absolute path.
-2. Require Python 3.10+, Pillow, and NumPy. If unavailable, stop and report the missing dependency; do not silently switch to a generative editor.
-3. Accept single-frame, 8-bit JPEG and PNG in v0.3.0. Reject animation and higher-bit-depth inputs instead of silently losing frames or precision. Preserve dimensions and alpha structure. Convert a valid embedded ICC profile to the sRGB working/output space; preserve supported EXIF data when requested. Record a warning when an embedded profile is invalid or an untagged CMYK JPEG requires an uncertain default conversion.
+2. Require Python 3.10+, Pillow, and NumPy. For camera RAW or DNG, additionally require the optional `requirements-raw.txt` dependency. If unavailable, stop and report the missing dependency; do not silently switch to a generative editor or an embedded JPEG preview.
+3. Accept single-frame, 8-bit JPEG and PNG plus LibRaw-supported camera RAW files. Reject animation and unsupported encoded high-bit-depth inputs instead of silently losing frames or precision. Preserve dimensions and alpha structure. Convert a valid embedded ICC profile or developed RAW image to the sRGB working/output space; preserve supported EXIF data when requested. Record a warning when an embedded profile is invalid, an untagged CMYK JPEG requires an uncertain default conversion, maker-specific RAW metadata cannot be copied into the derivative, or RAW white balance falls back from valid camera metadata.
 4. Determine whether the user supplied a reference image, a named look, or only a correction request. Separately determine aesthetic intensity: `conservative`, `standard`, `bold`, or `transformative`.
 5. For a subjective look with no clear intensity cue, ask the user to choose conservative, standard, bold, or transformative. If no answer is available and continuing is appropriate, use standard and state that choice. Never silently default a subjective look to conservative.
-6. Separately decide whether color and tone can satisfy the request. If controlled diffusion may be needed, ask for effect permission; never infer it from intensity or prior tasks.
+6. Separately decide whether color and tone can satisfy the request. If controlled diffusion may be needed, ask for effect permission; never infer it from intensity or prior tasks. Treat texture permission separately as well: only the user's current explicit sharpening request may enable schema 1.3 refinement.
 7. Before a subjective render, state a concise treatment contract: magnitude, tonal and color axes, direction, scope, must-be-obvious outcome, protected exceptions, and effect status. Use this to expose misunderstandings; do not request confirmation unless a choice or effect permission is genuinely needed.
 
 ## Interpret intent
@@ -49,11 +59,16 @@ Do not treat identical parameters as perceptual consistency. For a batch, keep p
 - Treat preservation and aesthetic intensity as independent controls. Keep geometry, identity, facial features, objects, and texture protected even for a bold or transformative grade.
 - Treat `natural` as a style, not a synonym for low saturation or low intensity. Preserve vivid signature colors unless the preview shows clipping, hue breakage, or fluorescence.
 - Treat `cinematic` as tonal density and controlled color separation, not automatic fading or desaturation.
+- Treat generic `胶片感`, `胶片风格`, `film look`, or `analog look` as an ambiguous color-and-tone family. Route it to classic-negative, daylight-disposable, and cinematic-print color-only alternatives instead of silently choosing one averaged look. Do not infer grain, vignette, blur, light leak, distortion, sharpening, crop, or another texture or geometry effect from film language.
+- Treat `50% black layer`, `覆盖一层半透明黑色`, and equivalent dark-overlay language as a perceptual target for low exposure and deep-gray tonal placement. Do not composite a literal overlay or flatten recoverable texture.
+- Treat an explicit sharpening or output-sharpening request as eligible for schema 1.3 `refine` only after source inspection confirms that the image is already focused and does not need repair. Reject clarity, dehaze, microcontrast, generic texture enhancement, denoise, deblur, and restoration. Never claim recovered detail.
 - Map `保守`, `轻微`, `微调`, `克制`, `subtle`, or `restrained` to conservative. Map `放开调`, `强烈`, `浓郁`, `明显`, `大胆`, `极致`, `bold`, or `dramatic` to bold.
 - Map `变革型`, `大幅改变`, `彻底改变`, `完全换一种色调`, `大幅压低黄色`, `整体明显偏紫`, `transformative`, or `radically recolor` to transformative. Explicitly choosing transformative is sufficient magnitude instruction; do not weaken it back to bold.
 - Treat `梦境`, `梦幻`, `柔光`, `朦胧`, `辉光`, `光晕`, `发光`, `仙气`, `神性`, `圣洁`, and equivalent phrases as possible effect cues, not effect consent. A mood word alone does not require an effect when color and tone can satisfy the treatment contract.
 - Translate object-language color requests into honest source-color ranges after visual inspection. A request such as `樱花变成浅紫色` may use schema 1.2 hue, saturation, and luminance gates, but never claim semantic flower segmentation. Disclose when visually similar source colors may move together.
 - When the user changes direction, rebuild the creative look from the new intent. Do not retain incompatible assumptions from the previous recipe.
+
+- Treat generic `经典纪实`, `纪实摄影调色`, `彩色纪实`, or `documentary color` as a two-family color-and-tone request. Route it to vivid-documentary and archival-documentary alternatives unless a source-appropriate scene cue selects one. Route explicit grassland, pastoral, earth, or ochre documentary language to the source-gated earth-documentary subprofile. Do not infer grain, dust, softness, vignette, clarity, dehaze, or sharpening from documentary or archival language. Use `documentary-vivid-refine.json` only when sharpening is also explicit.
 
 ## Workflow
 
@@ -67,13 +82,35 @@ python scripts/analyze.py INPUT [INPUT ...] --output analysis.json
 
 Use the measurements as evidence, not as an automatic aesthetic verdict. Inspect the images visually as well. Identify the subject, important skin tones, lighting conditions, likely neutral areas, and requested mood.
 
+For RAW, treat demosaicing, white-balance source routing, output color conversion, and automatic brightness as part of the recorded source-development contract. Keep automatic white balance and brightness disabled, review any metadata fallback warning, and inspect the neutral baseline before adding a creative look.
+
+For film-language prompts, run:
+
+```text
+python scripts/route_film.py "PROMPT" [--output route.json]
+```
+
+Use `mode: selected` as a source-analysis-dependent baseline. For `mode: variants`, render the returned recipes together so the user can choose a direction. Report every `effect_requests` item as unsupported under strict preservation; never enable another effect as a substitute.
+
+For documentary-language prompts, run:
+
+```text
+python scripts/route_documentary.py "PROMPT" [--output route.json]
+```
+
+Use `mode: selected` only after confirming that the source supports the returned tonal direction. For `mode: variants`, compare the vivid and archival recipes together. Treat their sample-derived measurements as routing evidence, not targets that override clipping, skin, or gamut safety. Report unsupported effect requests separately.
+
+Before the first render from a new camera family or LibRaw version, run `python scripts/raw_check.py INPUT --output raw-check.json --full-decode`. Require deterministic preview pixels, unchanged source hash, recorded development provenance, and a successful full decode. Add `--require-camera-wb` only when fallback from as-shot metadata is unacceptable.
+
 ### 2. Author a recipe
 
-Start from `assets/recipes/neutral-correction.json`, `natural-standard.json`, `muted-cinematic.json`, `bold-cinematic.json`, the shadow-safe `low-light-cinematic.json`, or schema 1.2 `transformative-cool-violet.json` when a major warm-to-violet change is explicitly requested. After explicit effect consent only, `soft-dream-source-glow.json` is available as a source-derived diffusion starting point. Keep technical correction, creative look, and effects separate. Record the chosen style, intensity, selection method, and effect permission, and explain subjective decisions under `intent`.
+Start from `assets/recipes/neutral-correction.json`, `natural-standard.json`, `muted-cinematic.json`, `bold-cinematic.json`, the shadow-safe `low-light-cinematic.json`, schema 1.2 `wabi-sabi-deep-gray.json` for a low-key asphalt-gray base with restrained cool colors and warmer focal accents, `classic-negative-standard.json`, `daylight-disposable-standard.json`, `cinematic-print-standard.json`, or schema 1.2 `transformative-cool-violet.json` when a major warm-to-violet change is explicitly requested. After explicit effect consent only, `soft-dream-source-glow.json` is available as a source-derived diffusion starting point. After an explicit sharpening request only, schema 1.3 `output-refine-standard.json` is the neutral texture baseline. Keep technical correction, creative look, effects, and texture permission separate. Record the chosen style, intensity, selection method, effect permission, and texture permission under `intent`.
 
-Use a preset fast path before authoring from scratch. When the user explicitly asks for a transformative warm/cream blossom or foliage scene to become pale violet, with yellow/orange suppressed, a cold restrained night mood, and no effects, copy `transformative-cool-violet.json` unchanged as the first color baseline. Do not replace it with a newly invented recipe, enable skin protection, or raise exposure merely to increase a global difference score. Render it once, inspect the result, and adjust only a visibly mismatched conceptual axis. If the prompt conflicts with the preset, author a new recipe normally.
+For classic-documentary work, start with `documentary-vivid-standard.json`, `documentary-archive-standard.json`, or the source-gated `documentary-earth-standard.json` after routing; keep source-specific correction separate from the shared look. Use schema 1.3 `documentary-vivid-refine.json` only when the user explicitly requested sharpening and the source passes texture preflight.
 
-Do not delete or neutralize a template's documented `quality_tolerances`. A nonzero near-black allowance is valid only for schema 1.2 transformative work with an explicit darker tonal hierarchy and a written reason. It changes one warning baseline only; all structural, clipping, edge, texture, effect, and content gates remain strict.
+Use a preset fast path before authoring from scratch. When the user explicitly asks for a transformative warm/cream blossom or foliage scene to become pale violet, with yellow/orange suppressed, a cold restrained night mood, and no effects, first verify that the source actually contains the named warm/cream family and is not already a cool-violet result. Then copy `transformative-cool-violet.json` unchanged as the first color baseline. Do not reapply it to an already transformed source merely because the prompt repeats the target style. Do not replace it with a newly invented recipe, enable skin protection, or raise exposure merely to increase a global difference score. Render it once, inspect the result, and adjust only a visibly mismatched conceptual axis. If the prompt conflicts with the preset or the source family is absent, author a new recipe normally.
+
+Do not delete or neutralize a template's documented `quality_tolerances`. A nonzero near-black allowance is valid only for schema 1.2 or 1.3 transformative work with an explicit darker tonal hierarchy and a written reason. It changes one warning baseline only; all structural, clipping, edge, texture, effect, and content gates remain strict.
 
 Use only one global chroma control: `look.cdl.saturation`, `look.saturation`, or schema 1.1/1.2 `look.vibrance`. Prefer vibrance when a strong look must increase muted colors without driving already-saturated colors into clipping. Stacking global chroma controls fails validation. Schema 1.2 `look.hue_ranges` may additionally remap named source color families because each range records its own bounded selection and purpose.
 
@@ -133,6 +170,8 @@ Confirm that automatic derivation left correction, protection, and effect permis
 
 When source glow is enabled, also label the preview `source-derived glow: approved`, inspect it at 100%, and confirm that every bright region traces back to an existing source highlight. Remove the effect if it produces a detached bright shape or obscures important text, facial features, or texture.
 
+When output sharpening is enabled, label the preview `source-derived output sharpen: explicitly requested`, inspect it at 100%, and review skin, text, foliage, wires, rooflines, JPEG blocks, and dark noise. Reduce only the sharpen amount when a texture warning occurs. Remove texture processing if the source is defocused, motion-blurred, heavily compressed, or would require repair.
+
 ### 4. Render final images
 
 ```text
@@ -140,6 +179,10 @@ python scripts/grade.py render INPUT --recipe RECIPE.json --output OUTPUT.png
 ```
 
 Prefer PNG for a lossless graded master. When the user needs JPEG, encode once from the original decode at quality 95 or higher. Never chain intermediate JPEG files.
+
+For RAW input, describe PNG as a lossless derivative of the recorded development, not as a lossless copy of the sensor mosaic. Preserve the untouched RAW file and keep the development settings in the manifest.
+
+Review `raw_development.white_balance_source` before accepting RAW output. `camera` is the normal as-shot route; `daylight` means camera coefficients were missing, invalid, or suspiciously identity-like; `decoder_default` means neither metadata source was usable and requires neutral-color review. Use `raw_check.py --require-camera-wb` when a workflow must reject either fallback. Review `timing_seconds` before attributing a slow run to RAW decoding: full-resolution PNG encoding can dominate the total on large files.
 
 For a batch, create one recipe per image containing its correction section and the same shared `look` section. Keep the recipe files with the outputs.
 
@@ -162,6 +205,8 @@ python scripts/compare.py INPUT OUTPUT --recipe RECIPE.json --output report.json
 ```
 
 Treat a failed hard gate as a failed deliverable. Report warnings about new clipping, JPEG loss, aggressive skin shifts, or uncertain masks. Do not describe a warning as a pass.
+
+For schema 1.3, also review `texture.mean_gradient_ratio`, `texture.p90_gradient_ratio`, and `texture.highpass_std_ratio`. A numeric pass does not excuse visible halos, doubled contours, amplified artifacts, or roughened skin.
 
 Review the `difference` section. For standard, bold, or transformative strategies, do not accept a low-visual-delta warning merely because structural gates passed. For transformative hue-range work, a high P95 localized delta can satisfy the contract even when the global mean is modest; verify the named color family and inspect boundaries at 100%. Revise the aesthetic recipe only when the requested axis remains visibly underpowered or a documented quality problem exists.
 
