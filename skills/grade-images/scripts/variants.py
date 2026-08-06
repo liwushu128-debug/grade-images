@@ -120,6 +120,7 @@ def build_contact_sheet(
     panels: list[tuple[str, np.ndarray]],
     output: Path,
     columns: int = 2,
+    png_compress_level: int = 2,
 ) -> None:
     if not panels:
         raise ValueError("at least one panel is required")
@@ -150,7 +151,9 @@ def build_contact_sheet(
         image_y = y + header_height + (tile_height - image.height) // 2
         sheet.paste(image, (image_x, image_y))
     output.parent.mkdir(parents=True, exist_ok=True)
-    sheet.save(output, format="PNG", compress_level=6)
+    if not 0 <= png_compress_level <= 9:
+        raise ValueError("png_compress_level must be in [0, 9]")
+    sheet.save(output, format="PNG", compress_level=png_compress_level)
 
 
 def render_variants(
@@ -185,7 +188,7 @@ def render_variants(
         if output_path.resolve() == input_path.resolve():
             raise RecipeError("variant output must not overwrite the input")
         result, diagnostics = render_array(source, recipe)
-        save_image(output_path, result, alpha, recipe, metadata)
+        save_image(output_path, result, alpha, recipe, metadata, png_compress_level=2)
         recipe_copy = output_path.with_suffix(output_path.suffix + ".recipe.json")
         shutil.copyfile(recipe_path, recipe_copy)
         difference = difference_metrics(source, result)

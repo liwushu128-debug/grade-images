@@ -1,0 +1,77 @@
+{
+  "schema_version": "1.2",
+  "intent": "Earth-toned documentary baseline that moves established green and yellow-green source families toward restrained ochre, nudges established blue toward cyan, and keeps geometry, texture, and scene content unchanged",
+  "strategy": {"intensity": "standard", "style": "custom", "selection": "template"},
+  "preservation": {
+    "mode": "strict",
+    "allow_geometry_changes": false,
+    "allow_texture_changes": false,
+    "allow_generative_changes": false
+  },
+  "correction": {
+    "exposure_ev": 0.0,
+    "white_balance": {"rgb_gains": [1.0, 1.0, 1.0]},
+    "black_point": 0.0,
+    "white_point": 1.03,
+    "highlight_rolloff": 0.38
+  },
+  "look": {
+    "tone_curve": {"strength": -0.2},
+    "cdl": {
+      "slope": [1.04, 1.0, 0.96],
+      "offset": [-0.003, 0.0, 0.002],
+      "power": [1.06, 1.03, 1.04],
+      "saturation": 1.0
+    },
+    "vibrance": -0.08,
+    "split_tone": {
+      "shadows": [0.36, 0.5, 0.49],
+      "highlights": [0.72, 0.58, 0.36],
+      "balance": 0.04,
+      "strength": 0.08
+    },
+    "hue_ranges": [
+      {
+        "label": "Established green toward restrained ochre",
+        "center_degrees": 115.0,
+        "width_degrees": 82.0,
+        "feather_degrees": 24.0,
+        "hue_shift_degrees": -46.0,
+        "saturation_scale": 0.78,
+        "luminance_scale": 0.9,
+        "saturation_range": [0.14, 1.0],
+        "luminance_range": [0.04, 0.92],
+        "range_feather": 0.1,
+        "strength": 0.72
+      },
+      {
+        "label": "Established yellow-green toward dry earth",
+        "center_degrees": 76.0,
+        "width_degrees": 54.0,
+        "feather_degrees": 18.0,
+        "hue_shift_degrees": -24.0,
+        "saturation_scale": 0.86,
+        "luminance_scale": 0.91,
+        "saturation_range": [0.14, 1.0],
+        "luminance_range": [0.04, 0.92],
+        "range_feather": 0.1,
+        "strength": 0.7
+      },
+      {
+        "label": "Established blue toward restrained cyan",
+        "center_degrees": 220.0,
+        "width_degrees": 72.0,
+        "feather_degrees": 20.0,
+        "hue_shift_degrees": -18.0,
+        "saturation_scale": 0.84,
+        "luminance_scale": 0.96,
+        "saturation_range": [0.14, 1.0],
+        "luminance_range": [0.04, 0.96],
+        "range_feather": 0.1,
+        "strength": 0.62
+      }
+    ]
+  },
+  "protection": {"skin": {"enabled": true, "strength": 0.76}},
+  "output": {"format": "png", "quality": 95, "profile": "sRGB", "preserve_metadata": true}
+}

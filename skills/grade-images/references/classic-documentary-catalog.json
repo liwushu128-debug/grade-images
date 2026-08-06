@@ -1,0 +1,62 @@
+{
+  "schema_version": "1.0",
+  "default_intensity": "standard",
+  "generic_route": {"mode": "variants", "profiles": ["documentary-vivid", "documentary-archive"]},
+  "profiles": [
+    {
+      "id": "documentary-vivid",
+      "title": "Vivid Documentary",
+      "recipe": "../assets/recipes/documentary-vivid-standard.json",
+      "priority": 40,
+      "prompt_terms": ["高密度彩色纪实", "鲜明彩色纪实", "浓郁纪实", "vivid documentary", "rich documentary color"],
+      "scene_terms": ["风光", "乡村", "旅行", "秋色", "稻田", "山野", "风暴", "海岸", "landscape", "rural", "travel", "autumn", "field", "storm", "coast"],
+      "contract": {
+        "tone": "dense midtones, anchored shadows, and retained highlight separation",
+        "color": "warm subject colors against deep cool-green surroundings",
+        "chroma": "strong muted-color expansion with bounded saturated peaks",
+        "effects": "absent"
+      }
+    },
+    {
+      "id": "documentary-archive",
+      "title": "Archival Documentary",
+      "recipe": "../assets/recipes/documentary-archive-standard.json",
+      "priority": 45,
+      "prompt_terms": ["档案纪实", "旧印相纪实", "人文档案感", "杂志档案纪实", "archival documentary", "documentary print"],
+      "scene_terms": ["街头", "城市", "人文", "商店", "港口", "日常", "street", "urban", "humanist", "shop", "harbor", "everyday"],
+      "contract": {
+        "tone": "softened contrast with compressed highlights and open low shadows",
+        "color": "warm cream highlights with olive-cyan shadow separation",
+        "chroma": "lift muted color while restraining already-saturated peaks",
+        "effects": "absent"
+      }
+    },
+    {
+      "id": "documentary-earth",
+      "title": "Earth Documentary",
+      "recipe": "../assets/recipes/documentary-earth-standard.json",
+      "priority": 55,
+      "prompt_terms": ["赭石纪实", "土地纪实", "大地色纪实", "earth documentary", "ochre documentary"],
+      "scene_terms": ["草原", "牧场", "荒原", "土地", "grassland", "pastoral", "steppe", "earth"],
+      "contract": {
+        "tone": "softened low-density print tone with restrained highlights",
+        "color": "green and yellow-green source families move toward ochre while established blue moves toward cyan",
+        "chroma": "restrained, selective source-color remapping rather than global desaturation",
+        "effects": "absent"
+      }
+    }
+  ],
+  "generic_terms": ["经典纪实", "纪实摄影调色", "纪实摄影风格", "彩色纪实", "documentary color", "documentary photography look", "classic documentary"],
+  "texture_terms": {
+    "output_sharpen": ["输出锐化", "轻微锐化", "锐化", "output sharpen", "sharpen"]
+  },
+  "forbidden_effect_terms": {
+    "grain": ["颗粒", "胶片颗粒", "grain", "film grain"],
+    "dust": ["灰尘", "尘点", "dust", "dust specks"],
+    "vignette": ["暗角", "vignette"],
+    "blur": ["柔焦", "模糊", "soft focus", "blur"],
+    "light_leak": ["漏光", "light leak"],
+    "clarity_dehaze": ["清晰度", "去雾", "微对比", "clarity", "dehaze", "microcontrast"],
+    "repair": ["降噪", "去噪", "修复", "去模糊", "超分辨率", "denoise", "repair", "deblur", "super resolution"]
+  }
+}

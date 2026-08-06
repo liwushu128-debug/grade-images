@@ -1,4 +1,4 @@
 interface:
   display_name: "Grade Images"
-  short_description: "Deterministic grades from subtle to transformative"
-  default_prompt: "Use $grade-images to choose the closest safe preset first, render a single-pass preview, honor explicit transformative color intent without chasing unrelated global thresholds, ask before source-derived glow, and never alter scene content."
+  short_description: "Strict grading with opt-in output sharpening"
+  default_prompt: "Use $grade-images to grade my photo and render a preview. Keep texture unchanged unless I explicitly request bounded output sharpening; never repair, generate, or alter scene content."

@@ -1,0 +1,36 @@
+{
+  "schema_version": "1.1",
+  "intent": "Sample-informed vivid documentary baseline with dense midtones, anchored shadows, warm subject colors, deep cool-green separation, and no grain, dust, blur, vignette, sharpening, or geometry change",
+  "strategy": {"intensity": "standard", "style": "custom", "selection": "template"},
+  "preservation": {
+    "mode": "strict",
+    "allow_geometry_changes": false,
+    "allow_texture_changes": false,
+    "allow_generative_changes": false
+  },
+  "correction": {
+    "exposure_ev": 0.0,
+    "white_balance": {"rgb_gains": [1.0, 1.0, 1.0]},
+    "black_point": 0.003,
+    "white_point": 1.04,
+    "highlight_rolloff": 0.24
+  },
+  "look": {
+    "tone_curve": {"strength": 0.54},
+    "cdl": {
+      "slope": [1.025, 1.01, 0.985],
+      "offset": [0.0, 0.0, 0.0],
+      "power": [1.04, 1.025, 1.045],
+      "saturation": 1.0
+    },
+    "vibrance": 0.5,
+    "split_tone": {
+      "shadows": [0.25, 0.47, 0.43],
+      "highlights": [0.78, 0.59, 0.3],
+      "balance": 0.05,
+      "strength": 0.105
+    }
+  },
+  "protection": {"skin": {"enabled": true, "strength": 0.72}},
+  "output": {"format": "png", "quality": 95, "profile": "sRGB", "preserve_metadata": true}
+}

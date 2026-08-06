@@ -24,9 +24,17 @@ TOP_KEYS = {
     "correction",
     "look",
     "effects",
+    "texture",
     "protection",
     "quality_tolerances",
     "output",
+}
+
+RAW_EXTENSIONS = {
+    ".3fr", ".ari", ".arw", ".bay", ".crw", ".cr2", ".cr3", ".dcr",
+    ".dng", ".erf", ".fff", ".gpr", ".iiq", ".k25", ".kdc", ".mef",
+    ".mos", ".mrw", ".nef", ".nrw", ".orf", ".pef", ".raf", ".raw",
+    ".rwl", ".rw2", ".sr2", ".srf", ".srw", ".x3f",
 }
 
 
@@ -76,8 +84,8 @@ def validate_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
         raise RecipeError("recipe must be a JSON object")
     _only_keys(recipe, TOP_KEYS, "recipe")
     schema_version = recipe.get("schema_version")
-    if schema_version not in {"1.0", "1.1", "1.2"}:
-        raise RecipeError("schema_version must be '1.0', '1.1', or '1.2'")
+    if schema_version not in {"1.0", "1.1", "1.2", "1.3"}:
+        raise RecipeError("schema_version must be '1.0', '1.1', '1.2', or '1.3'")
     if not isinstance(recipe.get("intent", ""), str):
         raise RecipeError("intent must be a string")
 
@@ -99,14 +107,19 @@ def validate_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
         {"mode", "allow_geometry_changes", "allow_texture_changes", "allow_generative_changes"},
         "preservation",
     )
+    texture_preview = _object(recipe.get("texture"), "texture")
+    sharpen_preview = _object(texture_preview.get("output_sharpen"), "texture.output_sharpen")
+    texture_requested = bool(sharpen_preview.get("enabled", False))
     required_policy = {
         "mode": "strict",
         "allow_geometry_changes": False,
-        "allow_texture_changes": False,
+        "allow_texture_changes": texture_requested,
         "allow_generative_changes": False,
     }
     if preservation != required_policy:
-        raise RecipeError("the exact strict preservation policy is required")
+        raise RecipeError(
+            "strict preservation is required; allow_texture_changes may be true only for an enabled v0.3.4 refine block"
+        )
 
     correction = _object(recipe.get("correction"), "correction")
     _only_keys(
@@ -152,8 +165,8 @@ def validate_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
         raise RecipeError(
             "set only one chroma control: cdl.saturation, saturation, or vibrance"
         )
-    if not math.isclose(vibrance, 0.0) and schema_version not in {"1.1", "1.2"}:
-        raise RecipeError("look.vibrance requires schema_version '1.1' or '1.2'")
+    if not math.isclose(vibrance, 0.0) and schema_version not in {"1.1", "1.2", "1.3"}:
+        raise RecipeError("look.vibrance requires schema_version '1.1', '1.2', or '1.3'")
     split = _object(look.get("split_tone"), "look.split_tone")
     _only_keys(split, {"shadows", "highlights", "balance", "strength"}, "look.split_tone")
     _triplet(split.get("shadows", [0.5, 0.5, 0.5]), "look.split_tone.shadows", 0.0, 1.0)
@@ -164,8 +177,8 @@ def validate_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
     hue_ranges = look.get("hue_ranges", [])
     if not isinstance(hue_ranges, list):
         raise RecipeError("look.hue_ranges must be an array")
-    if hue_ranges and schema_version != "1.2":
-        raise RecipeError("look.hue_ranges requires schema_version '1.2'")
+    if hue_ranges and schema_version not in {"1.2", "1.3"}:
+        raise RecipeError("look.hue_ranges requires schema_version '1.2' or '1.3'")
     if len(hue_ranges) > 8:
         raise RecipeError("look.hue_ranges supports at most 8 ranges")
     for index, value in enumerate(hue_ranges):
@@ -210,8 +223,8 @@ def validate_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
         _number(item.get("strength", 1.0), f"{name}.strength", 0.0, 1.0)
 
     effects = _object(recipe.get("effects"), "effects")
-    if "effects" in recipe and schema_version not in {"1.1", "1.2"}:
-        raise RecipeError("effects require schema_version '1.1' or '1.2'")
+    if "effects" in recipe and schema_version not in {"1.1", "1.2", "1.3"}:
+        raise RecipeError("effects require schema_version '1.1', '1.2', or '1.3'")
     _only_keys(effects, {"permission", "selection", "source_glow"}, "effects")
     source_glow = _object(effects.get("source_glow"), "effects.source_glow")
     _only_keys(
@@ -247,6 +260,52 @@ def validate_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
         if effects.get("permission") != "none" or effects.get("selection") != "not-required":
             raise RecipeError("disabled effects must use permission 'none' and selection 'not-required'")
 
+    texture = _object(recipe.get("texture"), "texture")
+    if "texture" in recipe and schema_version != "1.3":
+        raise RecipeError("texture refinement requires schema_version '1.3'")
+    _only_keys(texture, {"permission", "selection", "mode", "output_sharpen"}, "texture")
+    output_sharpen = _object(texture.get("output_sharpen"), "texture.output_sharpen")
+    _only_keys(
+        output_sharpen,
+        {"enabled", "amount", "radius_pixels", "threshold", "protect_skin", "protect_noise"},
+        "texture.output_sharpen",
+    )
+    sharpen_enabled = output_sharpen.get("enabled", False)
+    if not isinstance(sharpen_enabled, bool):
+        raise RecipeError("texture.output_sharpen.enabled must be boolean")
+    sharpen_amount = _number(
+        output_sharpen.get("amount", 0.0),
+        "texture.output_sharpen.amount",
+        0.0,
+        0.35,
+    )
+    _number(
+        output_sharpen.get("radius_pixels", 0.8),
+        "texture.output_sharpen.radius_pixels",
+        0.5,
+        1.5,
+    )
+    _number(
+        output_sharpen.get("threshold", 0.012),
+        "texture.output_sharpen.threshold",
+        0.005,
+        0.04,
+    )
+    for key in ("protect_skin", "protect_noise"):
+        if not isinstance(output_sharpen.get(key, True), bool):
+            raise RecipeError(f"texture.output_sharpen.{key} must be boolean")
+    if sharpen_enabled:
+        if texture.get("permission") != "source-derived-only":
+            raise RecipeError("enabled output sharpening requires texture.permission 'source-derived-only'")
+        if texture.get("selection") != "explicit-user":
+            raise RecipeError("enabled output sharpening requires an explicit user request")
+        if texture.get("mode") != "refine":
+            raise RecipeError("enabled output sharpening requires texture.mode 'refine'")
+        if sharpen_amount <= 0.0:
+            raise RecipeError("enabled output sharpening requires a positive amount")
+    elif texture:
+        raise RecipeError("omit texture when output sharpening is disabled")
+
     protection = _object(recipe.get("protection"), "protection")
     _only_keys(protection, {"skin"}, "protection")
     skin = _object(protection.get("skin"), "protection.skin")
@@ -268,8 +327,8 @@ def validate_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
         0.25,
     )
     if intentional_black > 0.0:
-        if schema_version != "1.2":
-            raise RecipeError("nonzero quality tolerances require schema_version '1.2'")
+        if schema_version not in {"1.2", "1.3"}:
+            raise RecipeError("nonzero quality tolerances require schema_version '1.2' or '1.3'")
         if strategy.get("intensity") != "transformative":
             raise RecipeError("near-black intent tolerance is limited to transformative strategy")
         reason = quality_tolerances.get("reason")
@@ -284,7 +343,7 @@ def validate_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
     if isinstance(quality, bool) or not isinstance(quality, int) or not 85 <= quality <= 100:
         raise RecipeError("output.quality must be an integer in [85, 100]")
     if output.get("profile", "sRGB") != "sRGB":
-        raise RecipeError("v0.3 output.profile must be sRGB")
+        raise RecipeError("v0.3.4 output.profile must be sRGB")
     if not isinstance(output.get("preserve_metadata", True), bool):
         raise RecipeError("output.preserve_metadata must be boolean")
     return recipe
@@ -370,11 +429,18 @@ def _soft_range_gate(values: np.ndarray, bounds: list[float], feather: float) ->
 
 
 def _apply_hue_ranges(rgb: np.ndarray, ranges: list[dict[str, Any]]) -> np.ndarray:
-    """Apply smooth, source-pixel-derived hue remaps without semantic or spatial masks."""
-    result = rgb
+    """Apply order-independent remaps selected from one immutable source-color state."""
+    if not ranges:
+        return rgb
+
+    source = rgb
+    encoded = np.clip(linear_to_srgb(source), 0.0, 1.0)
+    hue, saturation, value = _rgb_to_hsv(encoded)
+    source_luma = np.clip(luminance(source), 0.0, 1.0)
+    weighted_candidates = np.zeros_like(source)
+    weight_sum = np.zeros(source.shape[:2], dtype=np.float32)
+    remaining = np.ones(source.shape[:2], dtype=np.float32)
     for item in ranges:
-        encoded = np.clip(linear_to_srgb(result), 0.0, 1.0)
-        hue, saturation, value = _rgb_to_hsv(encoded)
         center = float(item["center_degrees"]) / 360.0
         half_width = float(item["width_degrees"]) / 720.0
         feather_hue = float(item.get("feather_degrees", 0.0)) / 360.0
@@ -383,7 +449,6 @@ def _apply_hue_ranges(rgb: np.ndarray, ranges: list[dict[str, Any]]) -> np.ndarr
             hue_gate = (distance <= half_width).astype(np.float32)
         else:
             hue_gate = np.clip((half_width + feather_hue - distance) / feather_hue, 0.0, 1.0)
-        source_luma = np.clip(luminance(result), 0.0, 1.0)
         range_feather = float(item.get("range_feather", 0.05))
         saturation_gate = _soft_range_gate(
             saturation, item.get("saturation_range", [0.0, 1.0]), range_feather
@@ -403,8 +468,18 @@ def _apply_hue_ranges(rgb: np.ndarray, ranges: list[dict[str, Any]]) -> np.ndarr
         shifted_luma = np.maximum(luminance(shifted_linear), 1e-8)
         target_luma = source_luma * float(item.get("luminance_scale", 1.0))
         shifted_linear *= (target_luma / shifted_luma)[..., None]
-        result = result * (1.0 - weight[..., None]) + shifted_linear * weight[..., None]
-    return result
+        weighted_candidates += shifted_linear * weight[..., None]
+        weight_sum += weight
+        remaining *= 1.0 - np.clip(weight, 0.0, 1.0)
+
+    mixed = np.divide(
+        weighted_candidates,
+        weight_sum[..., None],
+        out=source.copy(),
+        where=weight_sum[..., None] > 1e-8,
+    )
+    blend = np.clip(1.0 - remaining, 0.0, 1.0)
+    return source * (1.0 - blend[..., None]) + mixed * blend[..., None]
 
 
 def _compress_chroma_to_unit_gamut(rgb: np.ndarray) -> tuple[np.ndarray, float]:
@@ -559,14 +634,263 @@ def _apply_source_glow(
     return result, diagnostics
 
 
+def _apply_output_sharpen(
+    encoded: np.ndarray,
+    source_encoded: np.ndarray,
+    options: dict[str, Any],
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Apply bounded, source-derived output sharpening without inventing detail."""
+    if not options.get("enabled", False):
+        return encoded, {"enabled": False}
+    amount = float(options.get("amount", 0.0))
+    radius = float(options.get("radius_pixels", 0.8))
+    threshold = float(options.get("threshold", 0.012))
+    weights = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+    luma = np.sum(np.clip(encoded, 0.0, 1.0) * weights, axis=2)
+    source_luma = np.sum(np.clip(source_encoded, 0.0, 1.0) * weights, axis=2)
+    blurred = _blur_float_channel(luma, radius)
+    detail = luma - blurred
+    magnitude = np.abs(detail)
+    gate = np.clip((magnitude - threshold) / max(threshold + 0.01, 1e-6), 0.0, 1.0)
+    gate = gate * gate * (3.0 - 2.0 * gate)
+    if options.get("protect_noise", True):
+        # Dark encoded regions and isolated sub-threshold fluctuations are the
+        # most likely places for noise or JPEG artifacts to be exaggerated.
+        dark_gate = 0.15 + 0.85 * np.clip((source_luma - 0.04) / 0.24, 0.0, 1.0)
+        gate *= dark_gate
+    if options.get("protect_skin", True):
+        gate *= 1.0 - 0.85 * _skin_mask(source_encoded)
+    delta = np.clip(amount * detail * gate, -0.035, 0.035)
+    result = np.clip(encoded + delta[..., None], 0.0, 1.0)
+    source_gradient = np.hypot(*np.gradient(luma))
+    result_luma = np.sum(result * weights, axis=2)
+    result_gradient = np.hypot(*np.gradient(result_luma))
+    diagnostics = {
+        "enabled": True,
+        "mode": "refine",
+        "amount": amount,
+        "radius_pixels": radius,
+        "threshold": threshold,
+        "protect_skin": bool(options.get("protect_skin", True)),
+        "protect_noise": bool(options.get("protect_noise", True)),
+        "applied_fraction": round(float(np.mean(np.abs(delta) >= (0.5 / 255.0))), 6),
+        "maximum_luma_delta": round(float(np.max(np.abs(delta))), 6),
+        "gradient_energy_ratio": round(
+            float(np.mean(result_gradient) / max(float(np.mean(source_gradient)), 1e-8)),
+            6,
+        ),
+    }
+    return result, diagnostics
+
+
+def _raw_source_size(raw: Any) -> tuple[int, int] | None:
+    sizes = getattr(raw, "sizes", None)
+    if sizes is None:
+        return None
+    width = int(getattr(sizes, "width", 0) or getattr(sizes, "iwidth", 0) or 0)
+    height = int(getattr(sizes, "height", 0) or getattr(sizes, "iheight", 0) or 0)
+    if width <= 0 or height <= 0:
+        return None
+    if int(getattr(sizes, "flip", 0) or 0) in {5, 6}:
+        width, height = height, width
+    return width, height
+
+
+def _finite_float_list(value: Any) -> list[float] | None:
+    if value is None:
+        return None
+    try:
+        result = [float(item) for item in value]
+    except (TypeError, ValueError):
+        return None
+    return result if result and all(math.isfinite(item) for item in result) else None
+
+
+def _classify_raw_white_balance(value: Any) -> tuple[list[float] | None, str]:
+    coefficients = _finite_float_list(value)
+    if coefficients is None:
+        return None, "missing"
+    if len(coefficients) < 3 or any(item <= 0.0 for item in coefficients[:3]):
+        return coefficients, "invalid"
+    first_three = coefficients[:3]
+    if max(first_three) / min(first_three) <= 1.01:
+        return coefficients, "identity_suspect"
+    return coefficients, "valid"
+
+
+def _rawpy_user_white_balance(coefficients: list[float]) -> list[float]:
+    """Return four positive coefficients in the layout expected by rawpy."""
+    result = list(coefficients[:4])
+    while len(result) < 4:
+        result.append(result[1])
+    if result[3] <= 0.0:
+        result[3] = result[1]
+    return result
+
+
+def _load_raw_image(path: Path, max_size: int | None) -> tuple[np.ndarray, None, dict[str, Any]]:
+    try:
+        import rawpy  # type: ignore[import-not-found]
+    except ImportError as error:
+        raise RecipeError(
+            "RAW input requires the optional rawpy/LibRaw backend; "
+            "install requirements-raw.txt and retry"
+        ) from error
+
+    try:
+        with rawpy.imread(str(path)) as raw:
+            source_size = _raw_source_size(raw)
+            orientation_flip = int(getattr(getattr(raw, "sizes", None), "flip", 0) or 0)
+            half_size = bool(
+                max_size
+                and source_size
+                and max(source_size) > int(max_size) * 2
+            )
+            output_bps = 8 if max_size is not None else 16
+            camera_whitebalance, camera_wb_status = _classify_raw_white_balance(
+                getattr(raw, "camera_whitebalance", None)
+            )
+            daylight_whitebalance, daylight_wb_status = _classify_raw_white_balance(
+                getattr(raw, "daylight_whitebalance", None)
+            )
+            if camera_wb_status == "valid":
+                use_camera_wb = True
+                user_wb = None
+                white_balance_source = "camera"
+                white_balance_fallback_reason = None
+            elif daylight_wb_status == "valid":
+                use_camera_wb = False
+                user_wb = _rawpy_user_white_balance(daylight_whitebalance)
+                white_balance_source = "daylight"
+                white_balance_fallback_reason = f"camera_white_balance_{camera_wb_status}"
+            else:
+                use_camera_wb = False
+                user_wb = None
+                white_balance_source = "decoder_default"
+                white_balance_fallback_reason = (
+                    f"camera_white_balance_{camera_wb_status};"
+                    f"daylight_white_balance_{daylight_wb_status}"
+                )
+            decoded = raw.postprocess(
+                demosaic_algorithm=rawpy.DemosaicAlgorithm.AHD,
+                use_camera_wb=use_camera_wb,
+                use_auto_wb=False,
+                user_wb=user_wb,
+                no_auto_bright=True,
+                output_color=rawpy.ColorSpace.sRGB,
+                output_bps=output_bps,
+                gamma=(2.4, 12.92),
+                half_size=half_size,
+                highlight_mode=rawpy.HighlightMode.Clip,
+                four_color_rgb=False,
+                dcb_iterations=0,
+                dcb_enhance=False,
+                fbdd_noise_reduction=rawpy.FBDDNoiseReductionMode.Off,
+                noise_thr=None,
+                median_filter_passes=0,
+                chromatic_aberration=None,
+                bad_pixels_path=None,
+            )
+    except Exception as error:
+        raw_error = getattr(rawpy, "LibRawError", None)
+        if isinstance(error, OSError) or (raw_error is not None and isinstance(error, raw_error)):
+            raise RecipeError(f"RAW decode failed or camera format is unsupported: {error}") from error
+        raise
+
+    supported_dtypes = {np.dtype("uint8"), np.dtype("uint16")}
+    if decoded.ndim != 3 or decoded.shape[2] != 3 or decoded.dtype not in supported_dtypes:
+        raise RecipeError("RAW backend returned an unsupported RGB array")
+    if source_size is None:
+        multiplier = 2 if half_size else 1
+        source_size = (int(decoded.shape[1]) * multiplier, int(decoded.shape[0]) * multiplier)
+    if max_size and max(decoded.shape[:2]) > max_size:
+        preview_array = decoded if decoded.dtype == np.uint8 else np.uint8(decoded / 257)
+        preview = Image.fromarray(preview_array, mode="RGB")
+        preview.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+        decoded = np.asarray(preview, dtype=np.uint8)
+        output_bps = 8
+    scale = 65535.0 if decoded.dtype == np.uint16 else 255.0
+    array = decoded.astype(np.float32) / scale
+    rawpy_version = str(getattr(rawpy, "__version__", "unknown"))
+    libraw_version = getattr(rawpy, "libraw_version", "unknown")
+    if isinstance(libraw_version, tuple):
+        libraw_version = ".".join(str(part) for part in libraw_version)
+    camera_wb_valid = camera_wb_status == "valid"
+    daylight_wb_valid = daylight_wb_status == "valid"
+    warnings = [
+        "RAW was deterministically demosaiced with no automatic white balance or automatic brightening",
+        "maker-specific EXIF and edit instructions are not copied; the sidecar records development provenance instead",
+    ]
+    if white_balance_source == "daylight":
+        warnings.append(
+            "camera white balance was unavailable or suspect; deterministic daylight coefficients were used"
+        )
+    elif white_balance_source == "decoder_default":
+        warnings.append(
+            "camera and daylight white balance were unavailable or invalid; decoder defaults were used, so review neutral colors"
+        )
+    development = {
+        "backend": "rawpy/LibRaw",
+        "rawpy_version": rawpy_version,
+        "libraw_version": str(libraw_version),
+        "camera_white_balance_requested": use_camera_wb,
+        "camera_white_balance": camera_whitebalance,
+        "camera_white_balance_valid": camera_wb_valid,
+        "camera_white_balance_status": camera_wb_status,
+        "daylight_white_balance": daylight_whitebalance,
+        "daylight_white_balance_valid": daylight_wb_valid,
+        "daylight_white_balance_status": daylight_wb_status,
+        "white_balance_source": white_balance_source,
+        "white_balance_fallback_reason": white_balance_fallback_reason,
+        "auto_white_balance": False,
+        "auto_brightness": False,
+        "output_color": "sRGB",
+        "output_bps": output_bps,
+        "graded_derivative_bps": 8,
+        "gamma": [2.4, 12.92],
+        "half_size": half_size,
+        "orientation_flip": orientation_flip,
+        "demosaic_algorithm": "AHD",
+        "highlight_mode": "clip",
+        "detail_operations": {
+            "four_color_rgb": False,
+            "dcb_iterations": 0,
+            "dcb_enhance": False,
+            "fbdd_noise_reduction": "off",
+            "noise_threshold": None,
+            "median_filter_passes": 0,
+            "chromatic_aberration_correction": False,
+            "bad_pixel_map": False,
+            "sharpening": False,
+        },
+    }
+    info = {
+        "source_mode": "RAW",
+        "source_size": source_size,
+        "source_icc_present": False,
+        "working_profile": "sRGB",
+        "color_management": "rawpy_libraw_camera_to_srgb",
+        "warnings": warnings,
+        "output_icc_profile": _srgb_profile_bytes(),
+        "exif": None,
+        "raw_development": development,
+    }
+    return array, None, info
+
+
 def load_image(path: str | Path, max_size: int | None = None) -> tuple[np.ndarray, np.ndarray | None, dict[str, Any]]:
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    if path.suffix.lower() in RAW_EXTENSIONS:
+        return _load_raw_image(path, max_size)
     with Image.open(path) as source:
         if source.format not in {"JPEG", "PNG"}:
-            raise RecipeError("v0.3 accepts only JPEG and PNG images")
+            raise RecipeError("v0.3.4 accepts only JPEG and PNG images")
         if getattr(source, "n_frames", 1) != 1:
-            raise RecipeError("v0.3 accepts only single-frame images")
+            raise RecipeError("v0.3.4 accepts only single-frame images")
         if source.mode in {"I", "I;16", "I;16B", "I;16L", "F"}:
-            raise RecipeError("v0.3 accepts only 8-bit image channels")
+            raise RecipeError("v0.3.4 accepts only 8-bit image channels")
         embedded_profile = source.info.get("icc_profile")
         info = {
             "source_mode": source.mode,
@@ -631,9 +955,16 @@ def render_array(encoded_rgb: np.ndarray, recipe: dict[str, Any]) -> tuple[np.nd
         raise RuntimeError("render produced non-finite pixels")
     looked, gamut_compressed_fraction = _compress_chroma_to_unit_gamut(looked)
     encoded = np.clip(linear_to_srgb(looked), 0.0, 1.0)
+    texture_options = recipe.get("texture", {}).get("output_sharpen", {})
+    encoded, texture_diagnostics = _apply_output_sharpen(
+        encoded,
+        encoded_rgb,
+        texture_options,
+    )
     return encoded, {
         "skin_fraction": skin_fraction,
         "source_glow": glow_diagnostics,
+        "texture": texture_diagnostics,
         "gamut_compressed_fraction": round(gamut_compressed_fraction, 6),
     }
 
@@ -644,6 +975,8 @@ def save_image(
     alpha: np.ndarray | None,
     recipe: dict[str, Any],
     metadata: dict[str, Any],
+    *,
+    png_compress_level: int = 6,
 ) -> None:
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -674,7 +1007,9 @@ def save_image(
         save_args.update(quality=int(output_options.get("quality", 95)), subsampling=0, optimize=True)
         image.save(output, format="JPEG", **save_args)
     else:
-        image.save(output, format="PNG", compress_level=6, **save_args)
+        if not 0 <= png_compress_level <= 9:
+            raise ValueError("png_compress_level must be in [0, 9]")
+        image.save(output, format="PNG", compress_level=png_compress_level, **save_args)
 
 
 def analyze_array(encoded_rgb: np.ndarray) -> dict[str, Any]:

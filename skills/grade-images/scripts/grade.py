@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import time
 from pathlib import Path
 
 from grade_core import (
@@ -23,13 +24,31 @@ def validate_command(recipe_path: Path) -> int:
 
 
 def render_command(input_path: Path, recipe_path: Path, output_path: Path, max_size: int | None) -> int:
+    total_started = time.perf_counter()
     if input_path.resolve() == output_path.resolve():
         raise RecipeError("output must not overwrite the input")
+    hash_started = time.perf_counter()
     source_hash_before = sha256_file(input_path)
+    input_hash_seconds = time.perf_counter() - hash_started
     recipe = load_recipe(recipe_path)
+    load_started = time.perf_counter()
     rgb, alpha, metadata = load_image(input_path, max_size=max_size)
+    load_seconds = time.perf_counter() - load_started
+    render_started = time.perf_counter()
     result, diagnostics = render_array(rgb, recipe)
-    save_image(output_path, result, alpha, recipe, metadata)
+    render_seconds = time.perf_counter() - render_started
+    is_raw = metadata.get("raw_development") is not None
+    png_compress_level = 2 if is_raw and output_path.suffix.lower() == ".png" else 6
+    save_started = time.perf_counter()
+    save_image(
+        output_path,
+        result,
+        alpha,
+        recipe,
+        metadata,
+        png_compress_level=png_compress_level,
+    )
+    save_seconds = time.perf_counter() - save_started
     source_hash_after = sha256_file(input_path)
     if source_hash_before != source_hash_after:
         output_path.unlink(missing_ok=True)
@@ -37,12 +56,15 @@ def render_command(input_path: Path, recipe_path: Path, output_path: Path, max_s
 
     recipe_copy = output_path.with_suffix(output_path.suffix + ".recipe.json")
     shutil.copyfile(recipe_path, recipe_copy)
+    output_hash_started = time.perf_counter()
+    output_hash = sha256_file(output_path)
+    output_hash_seconds = time.perf_counter() - output_hash_started
     manifest = {
         "schema_version": "1.0",
         "input": str(input_path.resolve()),
         "input_sha256": source_hash_before,
         "output": str(output_path.resolve()),
-        "output_sha256": sha256_file(output_path),
+        "output_sha256": output_hash,
         "preview": max_size is not None,
         "source_width": metadata["source_size"][0],
         "source_height": metadata["source_size"][1],
@@ -50,8 +72,22 @@ def render_command(input_path: Path, recipe_path: Path, output_path: Path, max_s
         "output_height": int(result.shape[0]),
         "has_alpha": alpha is not None,
         "color_management": metadata["color_management"],
+        "raw_development": metadata.get("raw_development"),
+        "output_encoding": {
+            "format": output_path.suffix.lower().lstrip("."),
+            "png_compress_level": png_compress_level if output_path.suffix.lower() == ".png" else None,
+            "lossless": output_path.suffix.lower() == ".png",
+        },
         "warnings": metadata["warnings"],
         "diagnostics": diagnostics,
+        "timing_seconds": {
+            "input_hash": round(input_hash_seconds, 4),
+            "load_and_raw_develop": round(load_seconds, 4),
+            "grade": round(render_seconds, 4),
+            "save": round(save_seconds, 4),
+            "output_hash": round(output_hash_seconds, 4),
+            "total_before_manifest": round(time.perf_counter() - total_started, 4),
+        },
     }
     manifest_path = output_path.with_suffix(output_path.suffix + ".manifest.json")
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")

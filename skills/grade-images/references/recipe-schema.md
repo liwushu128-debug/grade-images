@@ -4,13 +4,14 @@
 
 Every recipe is JSON with these allowed keys:
 
-- `schema_version`: `1.0` for the original color-only schema, `1.1` for vibrance and controlled effects, or `1.2` for deterministic hue-range remapping.
+- `schema_version`: `1.0` for the original color-only schema, `1.1` for vibrance and controlled effects, `1.2` for deterministic hue-range remapping, or `1.3` for explicit bounded texture refinement.
 - `intent`: short human-readable explanation.
 - `strategy`: selected aesthetic strategy and how it was selected.
 - `preservation`: strict execution policy.
 - `correction`: source-specific technical correction.
 - `look`: reusable creative treatment.
 - `effects`: optional, explicitly approved source-derived light diffusion.
+- `texture`: optional schema 1.3 output refinement; omit it by default.
 - `protection`: protected-region settings.
 - `quality_tolerances`: optional schema 1.2 warning-baseline allowance for an explicitly requested transformative tonal hierarchy.
 - `output`: encoding settings.
@@ -46,7 +47,7 @@ This field records the decision; it does not weaken strict preservation. Legacy 
 }
 ```
 
-All four values are mandatory in v0.3 and must match the example exactly.
+All four values are mandatory. Keep the example exactly for ordinary work. Set `allow_texture_changes: true` only when schema 1.3 contains an enabled, explicitly requested `texture.mode: refine` block; validation rejects every other combination.
 
 ## Correction
 
@@ -70,18 +71,18 @@ Allowed keys and ranges:
 - `cdl.power`: three values in `0.25..4.0`
 - `cdl.saturation`: `0.0..2.0`
 - `saturation`: `0.0..2.0`
-- `vibrance`: schema 1.1 or 1.2, `-1.0..2.0`; positive values affect muted colors more than saturated colors, while negative values create a soft color wash without uniformly crushing strong signature colors.
+- `vibrance`: schema 1.1, 1.2, or 1.3, `-1.0..2.0`; positive values affect muted colors more than saturated colors, while negative values create a soft color wash without uniformly crushing strong signature colors.
 - `split_tone.shadows`: RGB triplet in `0.0..1.0`
 - `split_tone.highlights`: RGB triplet in `0.0..1.0`
 - `split_tone.balance`: `-1.0..1.0`
 - `split_tone.strength`: `0.0..0.25`
-- `hue_ranges`: schema 1.2 only; up to eight smoothly feathered source-color ranges.
+- `hue_ranges`: schema 1.2 or 1.3; up to eight smoothly feathered source-color ranges.
 
 The renderer applies correction before look.
 
 Use only one chroma control: `cdl.saturation`, `saturation`, or `vibrance`. Validation rejects stacked controls. Treat natural color as a hue/white-balance goal, not as a request to desaturate.
 
-### Hue ranges (schema 1.2)
+### Hue ranges (schema 1.2 or 1.3)
 
 Use hue ranges only when the treatment contract explicitly requests a selective or major color-family change. Each item accepts:
 
@@ -96,11 +97,11 @@ Use hue ranges only when the treatment contract explicitly requests a selective 
 - `range_feather`: smooth feather outside those bounds in `0..0.25`;
 - `strength`: blend strength in `0..1`.
 
-Selection is computed from source-derived pixel color, never an object label or generated mask. Hue remapping runs before the global chroma control so a highly saturated excluded color does not become eligible merely because the recipe later desaturates it. Keep feathers broad enough to avoid banding and inspect color boundaries at 100%.
+Selection is computed once from the immutable pixel colors entering the hue-range stage, never an object label or generated mask. Every range sees the same source hue, saturation, and luminance state. Overlapping candidates are combined with an order-independent weighted blend, so reordering equivalent ranges must not change the output. Hue remapping runs before the global chroma control so a highly saturated excluded color does not become eligible merely because the recipe later desaturates it. Keep feathers broad enough to avoid banding and inspect color boundaries at 100%.
 
 ## Effects
 
-Effects require `schema_version: 1.1` or `1.2`. Omit `effects` for color-only work. An enabled effect must use:
+Effects require `schema_version: 1.1`, `1.2`, or `1.3`. Omit `effects` for color-only work. An enabled effect must use:
 
 ```json
 {
@@ -122,6 +123,28 @@ Effects require `schema_version: 1.1` or `1.2`. Omit `effects` for color-only wo
 - `strength`: bounded screen-like light addition, `0.0..0.35`; enabled effects require a positive value.
 
 If an `effects` object is present but disabled, it must use `permission: none` and `selection: not-required`. Unknown effects fail validation. Lens flare, rays, starbursts, artificial halos, light-source insertion, overlays, and arbitrary masks have no schema representation and are forbidden.
+
+## Texture refinement
+
+Texture refinement requires schema 1.3 and an explicit user request:
+
+```json
+{
+  "permission": "source-derived-only",
+  "selection": "explicit-user",
+  "mode": "refine",
+  "output_sharpen": {
+    "enabled": true,
+    "amount": 0.12,
+    "radius_pixels": 0.8,
+    "threshold": 0.012,
+    "protect_skin": true,
+    "protect_noise": true
+  }
+}
+```
+
+Omit `texture` when sharpening is not explicitly requested. Enabled sharpening requires positive `amount` in `0..0.35`; `radius_pixels` is `0.5..1.5`; `threshold` is `0.005..0.04`. No denoise, deblur, restoration, super-resolution, clarity, dehaze, grain, blur, local contrast, or synthetic texture key is allowed.
 
 ## Protection
 

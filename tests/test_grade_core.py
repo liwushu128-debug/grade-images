@@ -5,6 +5,7 @@ import copy
 import json
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -20,7 +21,11 @@ sys.path.insert(0, str(SKILL / "scripts"))
 import batch as batch_script  # noqa: E402
 import analyze as analyze_script  # noqa: E402
 import compare as compare_script  # noqa: E402
+import grade as grade_script  # noqa: E402
 import preview as preview_script  # noqa: E402
+import raw_check as raw_check_script  # noqa: E402
+import route_documentary as route_documentary_script  # noqa: E402
+import route_film as route_film_script  # noqa: E402
 import variants as variants_script  # noqa: E402
 from batch import derive_batch_recipes  # noqa: E402
 from compare import (  # noqa: E402
@@ -29,6 +34,8 @@ from compare import (  # noqa: E402
     reference_adjustment_suggestions,
     reference_match_metrics,
     strategy_warnings,
+    texture_metrics,
+    texture_warnings,
 )
 from grade_core import RecipeError, load_image, load_recipe, render_array, save_image, validate_recipe  # noqa: E402
 from match import derive_match_recipe  # noqa: E402
@@ -48,6 +55,15 @@ class GradeCoreTests(unittest.TestCase):
         cls.bold_path = SKILL / "assets" / "recipes" / "bold-cinematic.json"
         cls.soft_glow_path = SKILL / "assets" / "recipes" / "soft-dream-source-glow.json"
         cls.transformative_path = SKILL / "assets" / "recipes" / "transformative-cool-violet.json"
+        cls.wabi_sabi_path = SKILL / "assets" / "recipes" / "wabi-sabi-deep-gray.json"
+        cls.classic_negative_path = SKILL / "assets" / "recipes" / "classic-negative-standard.json"
+        cls.daylight_disposable_path = SKILL / "assets" / "recipes" / "daylight-disposable-standard.json"
+        cls.cinematic_print_path = SKILL / "assets" / "recipes" / "cinematic-print-standard.json"
+        cls.documentary_vivid_path = SKILL / "assets" / "recipes" / "documentary-vivid-standard.json"
+        cls.documentary_archive_path = SKILL / "assets" / "recipes" / "documentary-archive-standard.json"
+        cls.documentary_earth_path = SKILL / "assets" / "recipes" / "documentary-earth-standard.json"
+        cls.output_refine_path = SKILL / "assets" / "recipes" / "output-refine-standard.json"
+        cls.documentary_vivid_refine_path = SKILL / "assets" / "recipes" / "documentary-vivid-refine.json"
 
     def test_bundled_recipes_validate(self) -> None:
         load_recipe(self.neutral_path)
@@ -57,6 +73,361 @@ class GradeCoreTests(unittest.TestCase):
         load_recipe(self.bold_path)
         load_recipe(self.soft_glow_path)
         load_recipe(self.transformative_path)
+        load_recipe(self.wabi_sabi_path)
+        load_recipe(self.classic_negative_path)
+        load_recipe(self.daylight_disposable_path)
+        load_recipe(self.cinematic_print_path)
+        load_recipe(self.documentary_vivid_path)
+        load_recipe(self.documentary_archive_path)
+        load_recipe(self.documentary_earth_path)
+        load_recipe(self.output_refine_path)
+        load_recipe(self.documentary_vivid_refine_path)
+
+    def test_generic_film_prompt_routes_to_three_color_only_variants(self) -> None:
+        result = route_film_script.route_prompt("给这张照片标准强度的胶片感")
+        self.assertEqual(result["mode"], "variants")
+        self.assertEqual(result["default_intensity"], "standard")
+        self.assertEqual(
+            [candidate["id"] for candidate in result["candidates"]],
+            ["classic-negative", "daylight-disposable", "cinematic-print"],
+        )
+        self.assertFalse(result["effect_requests"])
+        for candidate in result["candidates"]:
+            recipe = load_recipe(Path(candidate["recipe"]))
+            self.assertNotIn("effects", recipe)
+            self.assertEqual(recipe["preservation"]["mode"], "strict")
+            self.assertFalse(recipe["preservation"]["allow_texture_changes"])
+
+    def test_specific_film_prompts_route_deterministically(self) -> None:
+        cases = {
+            "晴天户外的一次性胶片快照": "daylight-disposable",
+            "经典负片感的人像街拍": "classic-negative",
+            "夜景要电影印片感": "cinematic-print",
+        }
+        for prompt, expected in cases.items():
+            with self.subTest(prompt=prompt):
+                result = route_film_script.route_prompt(prompt)
+                self.assertEqual(result["mode"], "selected")
+                self.assertEqual(result["candidates"][0]["id"], expected)
+
+    def test_film_router_reports_forbidden_effects_without_enabling_them(self) -> None:
+        result = route_film_script.route_prompt("一次性胶片感，加颗粒、暗角和漏光")
+        self.assertEqual(result["candidates"][0]["id"], "daylight-disposable")
+        self.assertEqual(
+            {item["effect"] for item in result["effect_requests"]},
+            {"grain", "vignette", "light_leak"},
+        )
+        recipe = load_recipe(Path(result["candidates"][0]["recipe"]))
+        self.assertNotIn("effects", recipe)
+
+    def test_film_color_catalog_uses_only_generic_product_language(self) -> None:
+        catalog = (SKILL / "references" / "film-color-catalog.json").read_text(encoding="utf-8")
+        routing = (SKILL / "references" / "film-color-routing.md").read_text(encoding="utf-8")
+        recipes = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (
+                self.classic_negative_path,
+                self.daylight_disposable_path,
+                self.cinematic_print_path,
+            )
+        )
+        self.assertNotIn("dazz", (catalog + routing + recipes).casefold())
+
+    def test_film_color_presets_are_visibly_distinct_and_structure_safe(self) -> None:
+        source = np.full((64, 96, 3), [0.46, 0.46, 0.46], dtype=np.float32)
+        source[:, :32] = [0.76, 0.42, 0.16]
+        source[:, 64:] = [0.14, 0.46, 0.72]
+        outputs = []
+        for recipe_path in (
+            self.classic_negative_path,
+            self.daylight_disposable_path,
+            self.cinematic_print_path,
+        ):
+            recipe = load_recipe(recipe_path)
+            first, diagnostics = render_array(source, recipe)
+            second, repeated_diagnostics = render_array(source, recipe)
+            np.testing.assert_array_equal(first, second)
+            self.assertEqual(diagnostics, repeated_diagnostics)
+            structure = gradient_metrics(source, first)
+            self.assertGreater(structure["strong_edge_orientation_agreement"], 0.98)
+            self.assertLess(structure["new_strong_edge_fraction"], 0.012)
+            difference = difference_metrics(source, first)
+            self.assertGreater(difference["mean_absolute_rgb_delta"], 0.018)
+            self.assertGreater(difference["p95_pixel_rgb_delta"], 0.045)
+            outputs.append(first)
+        for left in range(len(outputs)):
+            for right in range(left + 1, len(outputs)):
+                self.assertGreater(
+                    difference_metrics(outputs[left], outputs[right])["mean_absolute_rgb_delta"],
+                    0.006,
+                )
+
+    def test_generic_documentary_prompt_routes_to_two_color_only_variants(self) -> None:
+        result = route_documentary_script.route_prompt("经典纪实摄影调色")
+        self.assertEqual(result["mode"], "variants")
+        self.assertEqual(result["default_intensity"], "standard")
+        self.assertEqual(
+            [candidate["id"] for candidate in result["candidates"]],
+            ["documentary-vivid", "documentary-archive"],
+        )
+        for candidate in result["candidates"]:
+            recipe = load_recipe(Path(candidate["recipe"]))
+            self.assertNotIn("effects", recipe)
+            self.assertEqual(recipe["preservation"]["mode"], "strict")
+            self.assertFalse(recipe["preservation"]["allow_texture_changes"])
+
+    def test_documentary_scene_routing_requires_documentary_language(self) -> None:
+        self.assertEqual(route_documentary_script.route_prompt("帮我处理街头照片")["mode"], "not-applicable")
+        vivid = route_documentary_script.route_prompt("经典纪实风光调色")
+        archive = route_documentary_script.route_prompt("经典纪实街头调色")
+        earth = route_documentary_script.route_prompt("经典纪实草原调色")
+        self.assertEqual(vivid["candidates"][0]["id"], "documentary-vivid")
+        self.assertEqual(archive["candidates"][0]["id"], "documentary-archive")
+        self.assertEqual(earth["candidates"][0]["id"], "documentary-earth")
+
+    def test_specific_documentary_profiles_route_deterministically(self) -> None:
+        cases = {
+            "这张照片做成高密度彩色纪实": "documentary-vivid",
+            "这张照片做成档案纪实": "documentary-archive",
+            "这张照片做成赭石纪实": "documentary-earth",
+        }
+        for prompt, expected in cases.items():
+            with self.subTest(prompt=prompt):
+                result = route_documentary_script.route_prompt(prompt)
+                self.assertEqual(result["mode"], "selected")
+                self.assertEqual(result["candidates"][0]["id"], expected)
+
+    def test_documentary_router_reports_texture_and_detail_effects(self) -> None:
+        result = route_documentary_script.route_prompt("经典纪实，加颗粒、灰尘和清晰度")
+        self.assertEqual(
+            {item["effect"] for item in result["effect_requests"]},
+            {"grain", "dust", "clarity_dehaze"},
+        )
+        self.assertTrue(all("effects" not in load_recipe(Path(item["recipe"])) for item in result["candidates"]))
+
+    def test_explicit_documentary_sharpen_is_separate_from_color_routing(self) -> None:
+        result = route_documentary_script.route_prompt("经典纪实风光调色，并做输出锐化")
+        self.assertEqual(result["candidates"][0]["id"], "documentary-vivid")
+        self.assertEqual(result["texture_requests"][0]["operation"], "output_sharpen")
+        self.assertEqual(result["texture_requests"][0]["status"], "eligible-after-source-review")
+        self.assertNotIn("texture", load_recipe(Path(result["candidates"][0]["recipe"])))
+
+    def test_film_sharpen_requires_a_separate_explicit_refine_route(self) -> None:
+        result = route_film_script.route_prompt("胶片感，并做轻微输出锐化")
+        self.assertTrue(result["texture_requests"])
+        self.assertFalse(any(item["effect"] == "sharpen" for item in result["effect_requests"]))
+
+    def test_schema_1_3_refine_is_explicit_bounded_and_non_generative(self) -> None:
+        recipe = load_recipe(self.output_refine_path)
+        self.assertTrue(recipe["preservation"]["allow_texture_changes"])
+        self.assertFalse(recipe["preservation"]["allow_generative_changes"])
+        self.assertEqual(recipe["texture"]["selection"], "explicit-user")
+        for mutation in (
+            lambda value: value.update({"schema_version": "1.2"}),
+            lambda value: value["texture"].update({"permission": "none"}),
+            lambda value: value["texture"]["output_sharpen"].update({"amount": 0.36}),
+            lambda value: value["texture"].update({"denoise": {"enabled": True}}),
+            lambda value: value["preservation"].update({"allow_generative_changes": True}),
+        ):
+            candidate = copy.deepcopy(recipe)
+            mutation(candidate)
+            with self.subTest(candidate=candidate):
+                with self.assertRaises(RecipeError):
+                    validate_recipe(candidate)
+
+    def test_color_only_default_keeps_texture_disabled(self) -> None:
+        recipe = load_recipe(self.neutral_path)
+        source = np.linspace(0.1, 0.9, 96, dtype=np.float32)[None, :, None]
+        source = np.tile(source, (64, 1, 3))
+        result, diagnostics = render_array(source, recipe)
+        np.testing.assert_allclose(result, source, atol=2e-6)
+        self.assertEqual(diagnostics["texture"], {"enabled": False})
+
+    def test_output_sharpen_is_deterministic_luminance_only_and_bounded(self) -> None:
+        recipe = load_recipe(self.output_refine_path)
+        source = np.full((72, 96, 3), 0.45, dtype=np.float32)
+        source[:, 48:] = [0.68, 0.58, 0.48]
+        source[::4, :, :] += 0.025
+        source = np.clip(source, 0.0, 1.0)
+        first, diagnostics = render_array(source, recipe)
+        second, repeated = render_array(source, recipe)
+        np.testing.assert_array_equal(first, second)
+        self.assertEqual(diagnostics, repeated)
+        self.assertTrue(diagnostics["texture"]["enabled"])
+        self.assertLessEqual(diagnostics["texture"]["maximum_luma_delta"], 0.035)
+        source_chroma = source - np.mean(source, axis=2, keepdims=True)
+        output_chroma = first - np.mean(first, axis=2, keepdims=True)
+        np.testing.assert_allclose(output_chroma, source_chroma, atol=2e-6)
+        metrics = texture_metrics(source, first)
+        self.assertGreater(metrics["mean_gradient_ratio"], 1.0)
+        self.assertFalse(texture_warnings(recipe, metrics))
+
+    def test_documentary_presets_are_distinct_safe_and_keep_signature_yellow(self) -> None:
+        source = np.full((64, 96, 3), [0.46, 0.46, 0.46], dtype=np.float32)
+        source[:, :32] = [0.78, 0.58, 0.08]
+        source[:, 64:] = [0.12, 0.42, 0.68]
+        outputs = []
+        for recipe_path in (self.documentary_vivid_path, self.documentary_archive_path):
+            recipe = load_recipe(recipe_path)
+            first, diagnostics = render_array(source, recipe)
+            second, repeated_diagnostics = render_array(source, recipe)
+            np.testing.assert_array_equal(first, second)
+            self.assertEqual(diagnostics, repeated_diagnostics)
+            self.assertGreater(gradient_metrics(source, first)["strong_edge_orientation_agreement"], 0.98)
+            self.assertLess(gradient_metrics(source, first)["new_strong_edge_fraction"], 0.012)
+            difference = difference_metrics(source, first)
+            self.assertGreater(difference["mean_absolute_rgb_delta"], 0.018)
+            self.assertGreater(difference["p95_pixel_rgb_delta"], 0.045)
+            outputs.append(first)
+        self.assertGreater(difference_metrics(outputs[0], outputs[1])["mean_absolute_rgb_delta"], 0.012)
+        vivid_yellow = np.mean(outputs[0][:, :32], axis=(0, 1))
+        self.assertGreater(float(min(vivid_yellow[0], vivid_yellow[1]) - vivid_yellow[2]), 0.25)
+
+    def test_documentary_earth_selectively_moves_established_green_toward_ochre(self) -> None:
+        recipe = load_recipe(self.documentary_earth_path)
+        source = np.full((32, 64, 3), [0.18, 0.62, 0.2], dtype=np.float32)
+        source[:, 32:] = [0.45, 0.45, 0.45]
+        output, _ = render_array(source, recipe)
+        green_source = np.mean(source[:, :32], axis=(0, 1))
+        green_output = np.mean(output[:, :32], axis=(0, 1))
+        neutral_delta = float(np.mean(np.abs(output[:, 32:] - source[:, 32:])))
+        green_delta = float(np.mean(np.abs(output[:, :32] - source[:, :32])))
+        self.assertGreater(green_output[0] / green_output[1], green_source[0] / green_source[1])
+        self.assertGreater(green_delta, neutral_delta)
+        self.assertGreater(gradient_metrics(source, output)["strong_edge_orientation_agreement"], 0.98)
+
+    def test_wabi_sabi_preset_darkens_base_and_retains_warm_color_hierarchy(self) -> None:
+        recipe = load_recipe(self.wabi_sabi_path)
+        source = np.zeros((24, 48, 3), dtype=np.float32)
+        source[:, :24] = [0.68, 0.46, 0.27]
+        source[:, 24:] = [0.27, 0.46, 0.68]
+        output, _ = render_array(source, recipe)
+        warm = output[:, :24].mean(axis=(0, 1))
+        cool = output[:, 24:].mean(axis=(0, 1))
+        warm_saturation = (float(np.max(warm)) - float(np.min(warm))) / float(np.max(warm))
+        cool_saturation = (float(np.max(cool)) - float(np.min(cool))) / float(np.max(cool))
+        self.assertLess(float(np.mean(output)), float(np.mean(source)))
+        self.assertGreater(warm_saturation, cool_saturation)
+
+    def test_wabi_sabi_preset_handles_diverse_synthetic_scenes(self) -> None:
+        recipe = load_recipe(self.wabi_sabi_path)
+        ramp = np.linspace(0.04, 0.92, 96, dtype=np.float32)
+        grayscale = np.repeat(np.repeat(ramp[None, :, None], 64, axis=0), 3, axis=2)
+
+        bright_mixed = np.full((64, 96, 3), [0.72, 0.72, 0.68], dtype=np.float32)
+        bright_mixed[:, :32] = [0.78, 0.48, 0.20]
+        bright_mixed[:, 32:64] = [0.20, 0.48, 0.78]
+
+        cool_dominant = np.full((64, 96, 3), [0.18, 0.42, 0.68], dtype=np.float32)
+        cool_dominant[16:48, 36:60] = [0.72, 0.43, 0.18]
+
+        low_light = np.full((64, 96, 3), [0.035, 0.045, 0.055], dtype=np.float32)
+        low_light[20:44, 34:62] = [0.22, 0.14, 0.07]
+        low_light[28:36, 44:52] = [0.76, 0.63, 0.42]
+
+        highlight_limited = np.full((64, 96, 3), [0.30, 0.33, 0.35], dtype=np.float32)
+        highlight_limited[20:36, 40:56] = [0.98, 0.92, 0.82]
+
+        cases = {
+            "grayscale-ramp": grayscale,
+            "bright-mixed": bright_mixed,
+            "cool-dominant": cool_dominant,
+            "low-light": low_light,
+            "highlight-limited": highlight_limited,
+        }
+        for name, source in cases.items():
+            with self.subTest(name=name):
+                output, diagnostics = render_array(source, recipe)
+                source_analysis = analyze_script.analyze_array(source)
+                output_analysis = analyze_script.analyze_array(output)
+                structure = gradient_metrics(source, output)
+                self.assertEqual(output.shape, source.shape)
+                self.assertTrue(np.all(np.isfinite(output)))
+                self.assertGreater(structure["strong_edge_orientation_agreement"], 0.98)
+                self.assertLess(structure["new_strong_edge_fraction"], 0.01)
+                self.assertLessEqual(
+                    output_analysis["clipping"]["any_channel_high_fraction"],
+                    source_analysis["clipping"]["any_channel_high_fraction"] + 0.005,
+                )
+                self.assertLessEqual(
+                    output_analysis["saturation"]["extreme_fraction"],
+                    source_analysis["saturation"]["extreme_fraction"] + 0.01,
+                )
+                self.assertLess(diagnostics["gamut_compressed_fraction"], 0.05)
+
+        gray_output, _ = render_array(grayscale, recipe)
+        gray_channel_means = np.mean(gray_output, axis=(0, 1))
+        self.assertLess(float(np.max(gray_channel_means) - np.min(gray_channel_means)), 0.04)
+
+        low_output, _ = render_array(low_light, recipe)
+        low_source_black = analyze_script.analyze_array(low_light)["clipping"]["near_black_fraction"]
+        low_output_black = analyze_script.analyze_array(low_output)["clipping"]["near_black_fraction"]
+        self.assertLessEqual(low_output_black, low_source_black + 0.10)
+
+    def test_all_bundled_presets_are_deterministic_across_scene_matrix(self) -> None:
+        ramp = np.linspace(0.03, 0.97, 96, dtype=np.float32)
+        grayscale = np.repeat(np.repeat(ramp[None, :, None], 64, axis=0), 3, axis=2)
+
+        warm_cool = np.full((64, 96, 3), [0.48, 0.48, 0.48], dtype=np.float32)
+        warm_cool[:, :32] = [0.82, 0.48, 0.16]
+        warm_cool[:, 64:] = [0.16, 0.48, 0.82]
+
+        low_light = np.full((64, 96, 3), [0.02, 0.035, 0.05], dtype=np.float32)
+        low_light[18:46, 28:68] = [0.20, 0.12, 0.06]
+        low_light[28:36, 44:52] = [0.82, 0.68, 0.44]
+
+        high_contrast = np.full((64, 96, 3), [0.12, 0.14, 0.16], dtype=np.float32)
+        high_contrast[:, 48:] = [0.72, 0.76, 0.80]
+        high_contrast[20:44, 38:58] = [0.99, 0.94, 0.84]
+
+        rng = np.random.default_rng(20260805)
+        near_neutral = np.clip(
+            np.full((64, 96, 3), 0.46, dtype=np.float32)
+            + rng.normal(0.0, 0.008, (64, 96, 3)).astype(np.float32),
+            0.0,
+            1.0,
+        )
+
+        samples = {
+            "grayscale": grayscale,
+            "warm-cool": warm_cool,
+            "low-light": low_light,
+            "high-contrast": high_contrast,
+            "near-neutral": near_neutral,
+        }
+        recipe_paths = [
+            self.neutral_path,
+            self.cinematic_path,
+            self.low_light_path,
+            self.natural_path,
+            self.bold_path,
+            self.soft_glow_path,
+            self.transformative_path,
+            self.wabi_sabi_path,
+            self.classic_negative_path,
+            self.daylight_disposable_path,
+            self.cinematic_print_path,
+            self.documentary_vivid_path,
+            self.documentary_archive_path,
+            self.documentary_earth_path,
+        ]
+        for recipe_path in recipe_paths:
+            recipe = load_recipe(recipe_path)
+            glow_enabled = recipe.get("effects", {}).get("source_glow", {}).get("enabled", False)
+            new_edge_limit = 0.04 if glow_enabled else 0.01
+            for sample_name, source in samples.items():
+                with self.subTest(recipe=recipe_path.name, sample=sample_name):
+                    first, first_diagnostics = render_array(source, recipe)
+                    second, second_diagnostics = render_array(source, recipe)
+                    np.testing.assert_array_equal(first, second)
+                    self.assertEqual(first_diagnostics, second_diagnostics)
+                    self.assertEqual(first.shape, source.shape)
+                    self.assertTrue(np.all(np.isfinite(first)))
+                    self.assertGreaterEqual(float(np.min(first)), 0.0)
+                    self.assertLessEqual(float(np.max(first)), 1.0)
+                    structure = gradient_metrics(source, first)
+                    self.assertGreater(structure["strong_edge_orientation_agreement"], 0.98)
+                    self.assertLessEqual(structure["new_strong_edge_fraction"], new_edge_limit)
 
     def test_double_saturation_adjustment_fails_closed(self) -> None:
         recipe = copy.deepcopy(load_recipe(self.neutral_path))
@@ -236,6 +607,30 @@ class GradeCoreTests(unittest.TestCase):
         self.assertFalse(no_skin["protection"]["skin"]["enabled"])
         self.assertFalse(no_skin_diagnostics["skin_protection_enabled"])
 
+    def test_low_light_reference_match_fits_multiple_tonal_landmarks(self) -> None:
+        template = load_recipe(self.neutral_path)
+        y, x = np.mgrid[0:80, 0:120]
+        base = 0.01 + 0.16 * (x / 119.0) ** 2
+        source = np.repeat(base[..., None], 3, axis=2).astype(np.float32)
+        source[15:30, 85:105] = 0.72
+        reference = np.clip(source ** 0.88, 0.0, 1.0).astype(np.float32)
+        recipe, diagnostics = derive_match_recipe(
+            source, reference, template, strength=0.90, skin_protection=False
+        )
+        output, _ = render_array(source, recipe)
+        metrics = reference_match_metrics(
+            analyze_script.analyze_array(source),
+            analyze_script.analyze_array(output),
+            analyze_script.analyze_array(reference),
+        )
+        self.assertEqual(
+            diagnostics["exposure_fit_percentiles"],
+            ["p05", "p25", "p50", "p75", "p95"],
+        )
+        self.assertLess(diagnostics["exposure_delta_ev"], diagnostics["exposure_limit_ev"])
+        self.assertTrue(diagnostics["low_light_positive_curve_suppressed"])
+        self.assertGreater(metrics["tone_improvement_fraction"], 0.50)
+
     def test_reference_match_uses_vibrance_for_uneven_chroma_target(self) -> None:
         template = load_recipe(self.neutral_path)
         source = np.empty((40, 50, 3), dtype=np.float32)
@@ -370,6 +765,25 @@ class GradeCoreTests(unittest.TestCase):
         bold = copy.deepcopy(load_recipe(self.bold_path))
         self.assertTrue(any("standard strategy" in item for item in strategy_warnings(standard, difference)))
         self.assertTrue(any("bold strategy" in item for item in strategy_warnings(bold, difference)))
+
+        globally_underpowered = {
+            "mean_absolute_rgb_delta": 0.014,
+            "p95_pixel_rgb_delta": 0.06,
+            "mean_absolute_luma_delta": 0.01,
+            "changed_pixel_fraction_2_255": 0.65,
+        }
+        self.assertTrue(
+            any("standard strategy" in item for item in strategy_warnings(standard, globally_underpowered))
+        )
+
+        localized = copy.deepcopy(standard)
+        localized["schema_version"] = "1.2"
+        localized["look"]["hue_ranges"] = [{
+            "center_degrees": 40.0,
+            "width_degrees": 60.0,
+            "hue_shift_degrees": -80.0,
+        }]
+        self.assertFalse(strategy_warnings(localized, globally_underpowered))
 
     def test_transformative_localized_change_does_not_require_large_global_mean(self) -> None:
         recipe = copy.deepcopy(load_recipe(self.transformative_path))
@@ -604,6 +1018,17 @@ class GradeCoreTests(unittest.TestCase):
             self.assertTrue(Path(report["cases"][0]["recipe"]).is_file())
             self.assertTrue(Path(report["report"]).is_file())
 
+            strict_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            strict_manifest["cases"][0]["minimum_tone_improvement_fraction"] = 1.1
+            strict_path = root / "strict-cases.json"
+            strict_path.write_text(json.dumps(strict_manifest), encoding="utf-8")
+            strict_report = run_regression(strict_path, root / "strict-regression")
+            self.assertEqual(strict_report["status"], "fail")
+            self.assertTrue(any(
+                "tone improvement" in failure
+                for failure in strict_report["cases"][0]["failures"]
+            ))
+
     def test_reference_search_stays_inside_selected_intensity_and_selects_best_safe_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -684,6 +1109,50 @@ class GradeCoreTests(unittest.TestCase):
         self.assertGreater(warm_output[2], warm_output[0])
         self.assertLess(float(np.max(np.abs(neutral_output - 0.52))), 0.01)
 
+    def test_overlapping_hue_ranges_are_order_independent(self) -> None:
+        recipe = copy.deepcopy(load_recipe(self.neutral_path))
+        recipe["schema_version"] = "1.2"
+        recipe["strategy"] = {
+            "intensity": "bold",
+            "style": "custom",
+            "selection": "explicit",
+        }
+        first = {
+            "label": "warm family cooler",
+            "center_degrees": 42.0,
+            "width_degrees": 100.0,
+            "feather_degrees": 30.0,
+            "hue_shift_degrees": -55.0,
+            "saturation_scale": 0.8,
+            "luminance_scale": 0.95,
+            "saturation_range": [0.03, 1.0],
+            "luminance_range": [0.01, 0.99],
+            "range_feather": 0.04,
+            "strength": 0.72,
+        }
+        second = {
+            "label": "yellow family restrained",
+            "center_degrees": 68.0,
+            "width_degrees": 80.0,
+            "feather_degrees": 24.0,
+            "hue_shift_degrees": -18.0,
+            "saturation_scale": 0.55,
+            "luminance_scale": 0.88,
+            "saturation_range": [0.03, 1.0],
+            "luminance_range": [0.01, 0.99],
+            "range_feather": 0.04,
+            "strength": 0.64,
+        }
+        source = np.zeros((20, 30, 3), dtype=np.float32)
+        source[:, :10] = [0.78, 0.55, 0.24]
+        source[:, 10:20] = [0.68, 0.42, 0.21]
+        source[:, 20:] = [0.32, 0.48, 0.72]
+        recipe["look"]["hue_ranges"] = [first, second]
+        forward, _ = render_array(source, recipe)
+        recipe["look"]["hue_ranges"] = [second, first]
+        reverse, _ = render_array(source, recipe)
+        np.testing.assert_allclose(forward, reverse, atol=1e-6)
+
     def test_hue_ranges_require_schema_1_2_and_reject_unknown_operations(self) -> None:
         recipe = copy.deepcopy(load_recipe(self.neutral_path))
         recipe["look"]["hue_ranges"] = [{
@@ -724,6 +1193,328 @@ class GradeCoreTests(unittest.TestCase):
                 load_image(bitmap)
             with self.assertRaises(RecipeError):
                 load_image(high_depth)
+
+    def test_raw_input_requires_optional_decoder(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "camera-file.dng"
+            path.write_bytes(b"fake raw fixture")
+            with patch.dict(sys.modules, {"rawpy": None}):
+                with self.assertRaisesRegex(RecipeError, "requirements-raw.txt"):
+                    load_image(path)
+
+    def test_raw_decoder_uses_recorded_strict_development_contract(self) -> None:
+        calls = {}
+
+        class FakeRaw:
+            sizes = types.SimpleNamespace(width=40, height=30, flip=0)
+            camera_whitebalance = [2.0, 1.0, 1.5, 1.0]
+            auto_whitebalance = [2.0, 1.0, 1.5, 1.0]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def postprocess(self, **kwargs):
+                calls.update(kwargs)
+                ramp = np.linspace(0, 65535, 40, dtype=np.uint16)
+                return np.repeat(np.repeat(ramp[None, :, None], 30, axis=0), 3, axis=2)
+
+        class FakeLibRawError(Exception):
+            pass
+
+        fake_rawpy = types.SimpleNamespace(
+            __version__="0.27.0",
+            libraw_version=(0, 22, 1),
+            imread=lambda path: FakeRaw(),
+            DemosaicAlgorithm=types.SimpleNamespace(AHD=3),
+            ColorSpace=types.SimpleNamespace(sRGB=1),
+            FBDDNoiseReductionMode=types.SimpleNamespace(Off=0),
+            HighlightMode=types.SimpleNamespace(Clip=0),
+            LibRawError=FakeLibRawError,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sample.dng"
+            output = Path(directory) / "result.png"
+            path.write_bytes(b"fake raw fixture")
+            with patch.dict(sys.modules, {"rawpy": fake_rawpy}):
+                rgb, alpha, metadata = load_image(path)
+                self.assertEqual(
+                    grade_script.render_command(path, self.neutral_path, output, None), 0
+                )
+            manifest = json.loads(
+                output.with_suffix(".png.manifest.json").read_text(encoding="utf-8")
+            )
+
+        self.assertIsNone(alpha)
+        self.assertEqual(rgb.shape, (30, 40, 3))
+        self.assertEqual(rgb.dtype, np.float32)
+        self.assertAlmostEqual(float(np.max(rgb)), 1.0)
+        self.assertEqual(metadata["source_mode"], "RAW")
+        self.assertEqual(metadata["source_size"], (40, 30))
+        self.assertEqual(metadata["color_management"], "rawpy_libraw_camera_to_srgb")
+        self.assertEqual(metadata["raw_development"]["output_bps"], 16)
+        self.assertEqual(metadata["raw_development"]["graded_derivative_bps"], 8)
+        self.assertEqual(metadata["raw_development"]["libraw_version"], "0.22.1")
+        self.assertTrue(metadata["raw_development"]["camera_white_balance_valid"])
+        self.assertEqual(metadata["raw_development"]["camera_white_balance_status"], "valid")
+        self.assertEqual(metadata["raw_development"]["white_balance_source"], "camera")
+        self.assertEqual(metadata["raw_development"]["demosaic_algorithm"], "AHD")
+        self.assertEqual(
+            metadata["raw_development"]["detail_operations"]["fbdd_noise_reduction"],
+            "off",
+        )
+        self.assertEqual(manifest["raw_development"]["backend"], "rawpy/LibRaw")
+        self.assertEqual(calls["demosaic_algorithm"], 3)
+        self.assertTrue(calls["use_camera_wb"])
+        self.assertFalse(calls["use_auto_wb"])
+        self.assertIsNone(calls["user_wb"])
+        self.assertTrue(calls["no_auto_bright"])
+        self.assertEqual(calls["gamma"], (2.4, 12.92))
+        self.assertFalse(calls["half_size"])
+        self.assertEqual(calls["highlight_mode"], 0)
+        self.assertFalse(calls["four_color_rgb"])
+        self.assertEqual(calls["dcb_iterations"], 0)
+        self.assertFalse(calls["dcb_enhance"])
+        self.assertEqual(calls["fbdd_noise_reduction"], 0)
+        self.assertIsNone(calls["noise_thr"])
+        self.assertEqual(calls["median_filter_passes"], 0)
+        self.assertIsNone(calls["chromatic_aberration"])
+        self.assertIsNone(calls["bad_pixels_path"])
+        self.assertEqual(manifest["output_encoding"]["png_compress_level"], 2)
+        self.assertTrue(manifest["output_encoding"]["lossless"])
+        self.assertIn("load_and_raw_develop", manifest["timing_seconds"])
+        self.assertIn("save", manifest["timing_seconds"])
+
+    def test_raw_identity_camera_wb_falls_back_to_daylight_coefficients(self) -> None:
+        calls = {}
+
+        class FakeRaw:
+            sizes = types.SimpleNamespace(width=20, height=10, flip=3)
+            camera_whitebalance = [1.0, 1.0, 1.0, 1.0]
+            daylight_whitebalance = [2.2, 1.0, 1.6, 0.0]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def postprocess(self, **kwargs):
+                calls.update(kwargs)
+                return np.full((10, 20, 3), 120, dtype=np.uint8)
+
+        fake_rawpy = types.SimpleNamespace(
+            __version__="test",
+            libraw_version=(0, 22, 1),
+            imread=lambda path: FakeRaw(),
+            DemosaicAlgorithm=types.SimpleNamespace(AHD=3),
+            ColorSpace=types.SimpleNamespace(sRGB=1),
+            FBDDNoiseReductionMode=types.SimpleNamespace(Off=0),
+            HighlightMode=types.SimpleNamespace(Clip=0),
+            LibRawError=RuntimeError,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sample.nef"
+            path.write_bytes(b"fake raw fixture")
+            with patch.dict(sys.modules, {"rawpy": fake_rawpy}):
+                _, _, metadata = load_image(path)
+
+        development = metadata["raw_development"]
+        self.assertFalse(calls["use_camera_wb"])
+        self.assertEqual(calls["user_wb"], [2.2, 1.0, 1.6, 1.0])
+        self.assertEqual(development["camera_white_balance_status"], "identity_suspect")
+        self.assertFalse(development["camera_white_balance_valid"])
+        self.assertEqual(development["daylight_white_balance_status"], "valid")
+        self.assertEqual(development["white_balance_source"], "daylight")
+        self.assertEqual(
+            development["white_balance_fallback_reason"],
+            "camera_white_balance_identity_suspect",
+        )
+        self.assertEqual(development["orientation_flip"], 3)
+        self.assertTrue(any("daylight coefficients" in item for item in metadata["warnings"]))
+
+    def test_raw_missing_white_balance_records_decoder_default(self) -> None:
+        calls = {}
+
+        class FakeRaw:
+            sizes = types.SimpleNamespace(width=16, height=12, flip=0)
+            camera_whitebalance = None
+            daylight_whitebalance = [0.0, 1.0, 1.0, 1.0]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def postprocess(self, **kwargs):
+                calls.update(kwargs)
+                return np.full((12, 16, 3), 100, dtype=np.uint8)
+
+        fake_rawpy = types.SimpleNamespace(
+            __version__="test",
+            libraw_version=(0, 22, 1),
+            imread=lambda path: FakeRaw(),
+            DemosaicAlgorithm=types.SimpleNamespace(AHD=3),
+            ColorSpace=types.SimpleNamespace(sRGB=1),
+            FBDDNoiseReductionMode=types.SimpleNamespace(Off=0),
+            HighlightMode=types.SimpleNamespace(Clip=0),
+            LibRawError=RuntimeError,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sample.dng"
+            path.write_bytes(b"fake raw fixture")
+            with patch.dict(sys.modules, {"rawpy": fake_rawpy}):
+                _, _, metadata = load_image(path)
+
+        development = metadata["raw_development"]
+        self.assertFalse(calls["use_camera_wb"])
+        self.assertIsNone(calls["user_wb"])
+        self.assertEqual(development["camera_white_balance_status"], "missing")
+        self.assertEqual(development["daylight_white_balance_status"], "invalid")
+        self.assertEqual(development["white_balance_source"], "decoder_default")
+        self.assertTrue(any("decoder defaults" in item for item in metadata["warnings"]))
+
+    def test_raw_preview_uses_half_size_and_one_bounded_resize(self) -> None:
+        calls = {}
+
+        class FakeRaw:
+            sizes = types.SimpleNamespace(width=400, height=300, flip=0)
+            camera_whitebalance = [1.8, 1.0, 1.4, 1.0]
+            auto_whitebalance = [1.8, 1.0, 1.4, 1.0]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def postprocess(self, **kwargs):
+                calls.update(kwargs)
+                return np.full((150, 200, 3), 128, dtype=np.uint8)
+
+        fake_rawpy = types.SimpleNamespace(
+            __version__="test",
+            libraw_version=(0, 22, 1),
+            imread=lambda path: FakeRaw(),
+            DemosaicAlgorithm=types.SimpleNamespace(AHD=3),
+            ColorSpace=types.SimpleNamespace(sRGB=1),
+            FBDDNoiseReductionMode=types.SimpleNamespace(Off=0),
+            HighlightMode=types.SimpleNamespace(Clip=0),
+            LibRawError=RuntimeError,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sample.nef"
+            path.write_bytes(b"fake raw fixture")
+            with patch.dict(sys.modules, {"rawpy": fake_rawpy}):
+                rgb, _, metadata = load_image(path, max_size=100)
+
+        self.assertTrue(calls["half_size"])
+        self.assertEqual(calls["output_bps"], 8)
+        self.assertEqual(rgb.shape, (75, 100, 3))
+        self.assertEqual(metadata["source_size"], (400, 300))
+        self.assertTrue(metadata["raw_development"]["half_size"])
+
+    def test_unsupported_raw_camera_fails_closed(self) -> None:
+        class FakeLibRawError(Exception):
+            pass
+
+        fake_rawpy = types.SimpleNamespace(
+            imread=lambda path: (_ for _ in ()).throw(FakeLibRawError("unsupported camera")),
+            LibRawError=FakeLibRawError,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "camera.cr3"
+            path.write_bytes(b"unsupported raw fixture")
+            with patch.dict(sys.modules, {"rawpy": fake_rawpy}):
+                with self.assertRaisesRegex(RecipeError, "unsupported camera"):
+                    load_image(path)
+
+    def test_raw_check_records_determinism_full_decode_and_unchanged_source(self) -> None:
+        class FakeRaw:
+            sizes = types.SimpleNamespace(width=160, height=120, flip=0)
+            camera_whitebalance = [2.0, 1.0, 1.4, 1.0]
+            auto_whitebalance = [2.0, 1.0, 1.4, 1.0]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def postprocess(self, **kwargs):
+                dtype = np.uint16 if kwargs["output_bps"] == 16 else np.uint8
+                maximum = 65535 if dtype == np.uint16 else 255
+                return np.full((120, 160, 3), maximum // 2, dtype=dtype)
+
+        fake_rawpy = types.SimpleNamespace(
+            __version__="0.27.0",
+            libraw_version=(0, 22, 1),
+            imread=lambda path: FakeRaw(),
+            DemosaicAlgorithm=types.SimpleNamespace(AHD=3),
+            ColorSpace=types.SimpleNamespace(sRGB=1),
+            FBDDNoiseReductionMode=types.SimpleNamespace(Off=0),
+            HighlightMode=types.SimpleNamespace(Clip=0),
+            LibRawError=RuntimeError,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "sample.nef"
+            report_path = root / "raw-check.json"
+            source.write_bytes(b"unchanged raw fixture")
+            with patch.dict(sys.modules, {"rawpy": fake_rawpy}):
+                report = raw_check_script.run_raw_checks(
+                    [source], report_path, max_size=100, full_decode=True
+                )
+
+            self.assertEqual(report["status"], "pass")
+            case = report["cases"][0]
+            self.assertTrue(case["deterministic_preview"])
+            self.assertTrue(case["source_unchanged"])
+            self.assertEqual(case["full_decode"]["decoder_output_bps"], 16)
+            self.assertTrue(report_path.is_file())
+
+    def test_raw_check_can_require_valid_camera_white_balance(self) -> None:
+        class FakeRaw:
+            sizes = types.SimpleNamespace(width=20, height=10, flip=0)
+            camera_whitebalance = [1.0, 1.0, 1.0, 1.0]
+            daylight_whitebalance = [2.0, 1.0, 1.5, 1.0]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def postprocess(self, **kwargs):
+                return np.full((10, 20, 3), 128, dtype=np.uint8)
+
+        fake_rawpy = types.SimpleNamespace(
+            __version__="test",
+            libraw_version=(0, 22, 1),
+            imread=lambda path: FakeRaw(),
+            DemosaicAlgorithm=types.SimpleNamespace(AHD=3),
+            ColorSpace=types.SimpleNamespace(sRGB=1),
+            FBDDNoiseReductionMode=types.SimpleNamespace(Off=0),
+            HighlightMode=types.SimpleNamespace(Clip=0),
+            LibRawError=RuntimeError,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "sample.nef"
+            source.write_bytes(b"unchanged raw fixture")
+            with patch.dict(sys.modules, {"rawpy": fake_rawpy}):
+                report = raw_check_script.run_raw_checks(
+                    [source],
+                    root / "raw-check.json",
+                    require_camera_wb=True,
+                )
+
+        self.assertTrue(report["require_camera_wb"])
+        self.assertEqual(report["status"], "fail")
+        self.assertIn("daylight", report["cases"][0]["error"])
 
     def test_untagged_cmyk_jpeg_reports_uncertain_conversion(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

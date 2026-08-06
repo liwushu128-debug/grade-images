@@ -1,0 +1,40 @@
+{
+  "schema_version": "1.1",
+  "intent": "Classic negative color baseline with soft highlight separation, earthy warm midtones, restrained cool undertones, and no grain, vignette, blur, light leak, sharpening, or geometry change",
+  "strategy": {
+    "intensity": "standard",
+    "style": "custom",
+    "selection": "template"
+  },
+  "preservation": {
+    "mode": "strict",
+    "allow_geometry_changes": false,
+    "allow_texture_changes": false,
+    "allow_generative_changes": false
+  },
+  "correction": {
+    "exposure_ev": 0.0,
+    "white_balance": {"rgb_gains": [1.0, 1.0, 1.0]},
+    "black_point": 0.0,
+    "white_point": 1.03,
+    "highlight_rolloff": 0.36
+  },
+  "look": {
+    "tone_curve": {"strength": 0.56},
+    "cdl": {
+      "slope": [1.012, 1.0, 0.99],
+      "offset": [0.003, 0.001, 0.004],
+      "power": [0.992, 1.0, 1.01],
+      "saturation": 1.0
+    },
+    "vibrance": 0.18,
+    "split_tone": {
+      "shadows": [0.36, 0.47, 0.52],
+      "highlights": [0.68, 0.58, 0.46],
+      "balance": 0.12,
+      "strength": 0.07
+    }
+  },
+  "protection": {"skin": {"enabled": true, "strength": 0.66}},
+  "output": {"format": "png", "quality": 95, "profile": "sRGB", "preserve_metadata": true}
+}

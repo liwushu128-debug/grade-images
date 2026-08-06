@@ -99,7 +99,7 @@ def search_reference_match(
         recipe_path = output_dir / f"candidate-{key}.json"
         result_path = output_dir / f"candidate-{key}.png"
         recipe_path.write_text(json.dumps(recipe, indent=2), encoding="utf-8")
-        save_image(result_path, result, alpha, recipe, metadata)
+        save_image(result_path, result, alpha, recipe, metadata, png_compress_level=2)
         candidate = {
             "strength": strength,
             "status": "reject" if failures else "safe",

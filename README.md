@@ -1,6 +1,6 @@
 # Grade Images
 
-`grade-images` is a deterministic Codex skill for photographic color correction, reference matching, creative color grading, batch consistency, and explicitly approved source-derived highlight diffusion. It never uses a generative image editor.
+`grade-images` is a deterministic Codex skill for camera RAW development, photographic color correction, reference matching, creative color grading, batch consistency, explicitly approved source-derived highlight diffusion, and opt-in bounded output sharpening. It never uses a generative image editor.
 
 The core design is simple: let the AI interpret intent and review previews, then let a constrained local renderer execute a versioned JSON recipe.
 
@@ -14,16 +14,26 @@ v0.2.1 新增多方案预览与带原图的标注对比图，可从一个基础�
 
 v0.3.0 加入“变革型”调色：当用户明确要求大幅改变整体色调、显著压低某类颜色或把一种颜色家族转向另一种颜色时，技能不再受以往保守审美幅度限制。新的 schema 1.2 可依据原图像素的色相、饱和度和明度进行平滑范围重映射，例如把暖白樱花推向浅紫，同时压低环境黄橙。它仍不使用语义分割、生成式蒙版或合成光效，尺寸、五官、物体、文字、纹理与原生光线位置继续受到严格保护。
 
+v0.3.1 聚焦稳定性、速度、RAW 开发与风格语言扩展。多个色相范围现在统一依据同一份不可变源颜色状态计算，并以顺序无关的方式合成，避免调整配方数组顺序就改变画面。预览与候选图使用更快的无损 PNG 编码，而最终渲染继续保留原有输出质量。RAW 路径显式锁定 AHD 去马赛克、相机白平衡、sRGB 输出和无自动提亮开发，并明确关闭降噪、坏点修复、中值滤波、色差校正、锐化等细节处理，同时把完整参数写入清单。本版本还新增“侘寂深灰”参考与预设，可构建沥青深灰基底、受控高光、低饱和冷色环境和相对突出的暖色主体，同时仍禁止真实黑色图层、锐化、颗粒与合成光效。
+
+v0.3.2 是 RAW 优化版本。相机白平衡不再只按“系数为正”粗略判定：缺失、非法或可疑的单位系数会被分别记录，并按固定规则回退到有效日光系数或解码器默认值，避免把无效元数据误报成 as-shot 白平衡。`raw_check.py --require-camera-wb` 可在严格工作流中拒绝任何回退。最终 RAW PNG 改用更快的无损压缩级别，渲染清单新增开发、调色、保存和哈希阶段耗时、输出编码参数、方向标记与完整白平衡来源，便于定位兼容性和性能问题。真实 NEF、ARW 与 DNG 被纳入本地回归覆盖，原始文件仍不会写入发布包。
+
+v0.3.3 新增严格的胶片色彩路由。`route_film.py` 将通用“胶片感”拆成经典负片、日光一次性胶片与电影印片三种可比较方向，并把更具体的提示词确定性地路由到相应 color-only 配方。所有胶片配方继续服从严格保护：不加入颗粒、暗角、柔焦、漏光、畸变、锐化或裁切；当提示词要求这些效果时，路由器会单独报告为不支持，而不是静默启用。v0.3.2 的 RAW 白平衡、性能诊断和真实 NEF/ARW/DNG 回归能力保持不变。
+
+The v0.3.3 documentary extension adds `route_documentary.py` and two color-only baselines learned from eight local Before/After study pairs: vivid documentary and archival documentary. The private examples are not packaged. Grain, dust, vignette, blur, light leaks, sharpening, clarity, dehaze, crop, and geometry changes remain forbidden.
+
+Version 0.3.4 keeps every ordinary recipe color-only and pixel-compatible with v0.3.3, then adds one schema 1.3 refinement path for an explicit current request for output sharpening. The only new operator is bounded, source-derived luminance sharpening after resize, with skin/noise protection and texture alarms. It cannot denoise, deblur, restore, super-resolve, add clarity/dehaze/local contrast, synthesize grain, repair defects, or generate content.
+
 ## Why this skill exists
 
-Many image-editing workflows mix color decisions with generative reconstruction. That can subtly change faces, objects, texture, or geometry. This skill instead uses an operation whitelist and an engine that has no crop, warp, inpainting, sharpening, smoothing, denoising, or synthesis operators.
+Many image-editing workflows mix color decisions with generative reconstruction. That can subtly change faces, objects, texture, or geometry. This skill instead uses an operation whitelist and an engine that has no crop, warp, inpainting, smoothing, denoising, restoration, or synthesis operators. Its sole texture operator is explicitly requested, bounded output sharpening of existing luminance detail.
 
 Strict mode guarantees that the pipeline cannot intentionally:
 
 - alter image dimensions or alpha topology;
 - reshape faces or objects;
 - add, remove, or regenerate scene content;
-- sharpen, blur the source image, denoise, smooth skin, or synthesize texture;
+- alter texture by default, blur the source image, denoise, smooth skin, repair detail, or synthesize texture;
 - synthesize or composite suns, lamps, reflections, flares, starbursts, halos, rays, rim lights, or painted highlights;
 - execute unknown recipe operations.
 
@@ -36,6 +46,7 @@ Color grading necessarily changes pixel values. JPEG re-encoding is also lossy. 
 - Reproducible creative looks using monotonic curves, ASC-CDL-style controls, saturation, and restrained split toning.
 - Schema 1.1 vibrance for strong color changes without uniformly overdriving already-saturated regions.
 - Schema 1.2 smooth hue-range remapping with source hue, saturation, and luminance gates—without semantic or generated masks.
+- A documented wabi-sabi deep-gray treatment with an asphalt-charcoal base, restrained cool colors, warmer focal accents, controlled highlights, and no literal overlays or sharpening.
 - Reference-derived matching without neural style transfer.
 - Labeled multi-variant previews that retain every independent result and recipe.
 - A single-pass preview command that renders, evaluates, labels, and records timings without repeated image decoding or ad hoc sheet scripts.
@@ -45,6 +56,7 @@ Color grading necessarily changes pixel values. JPEG re-encoding is also lossy. 
 - Per-image batch normalization followed by one shared creative look.
 - Optional feathered skin-color protection with explicit uncertainty warnings.
 - Embedded ICC conversion to an sRGB working and output space.
+- Optional rawpy/LibRaw camera RAW and DNG development with explicit AHD demosaicing, validated camera/daylight white-balance routing, disabled detail operations, and recorded bit-depth, color-space, orientation, and decoder settings.
 - Machine-readable recipes, render manifests, and quality reports.
 - Structural alarms for changed dimensions, alpha topology, edge orientation, new edges, clipping, and extreme saturation.
 - Optional source-derived highlight glow after explicit consent, with strict rejection of synthetic lighting.
@@ -53,7 +65,7 @@ Color grading necessarily changes pixel values. JPEG re-encoding is also lossy. 
 
 ## Supported scope
 
-Version 0.3.0 accepts single-frame, 8-bit JPEG and PNG images. It intentionally does not support RAW files, video, animated images, 16-bit images, retouching, geometry changes, grain, denoising, sharpening, synthetic/composited lighting, or generative edits.
+Version 0.3.4 accepts single-frame, 8-bit JPEG and PNG images plus camera RAW and DNG files supported by the installed rawpy/LibRaw backend. RAW support is optional, uses a 16-bit decoder intermediate for full development, and currently exports an 8-bit PNG or JPEG derivative; it never rewrites a camera RAW. Video, animated images, encoded 16-bit raster inputs, retouching, geometry changes, grain, denoising, deblurring, restoration, synthetic/composited lighting, and generative edits remain unsupported. Output sharpening is available only through an explicit schema 1.3 refinement request.
 
 Fully clipped highlights or shadows in an encoded JPEG or PNG cannot be recovered.
 
@@ -65,10 +77,18 @@ Requirements:
 - Pillow;
 - NumPy.
 
+Camera RAW additionally requires rawpy/LibRaw.
+
 From a repository checkout, install the runtime dependencies:
 
 ```bash
 python -m pip install -r requirements.txt
+```
+
+For camera RAW and DNG input, install the optional backend:
+
+```bash
+python -m pip install -r requirements-raw.txt
 ```
 
 Copy `skills/grade-images` into the Codex skills directory. The usual destination is `$CODEX_HOME/skills/grade-images`; when `CODEX_HOME` is unset, use `~/.codex/skills/grade-images`.
@@ -107,11 +127,15 @@ Direct script usage is also available from `skills/grade-images`:
 
 ```bash
 python scripts/analyze.py input.jpg --output analysis.json
+python scripts/raw_check.py input.nef --output raw-check.json --full-decode
+python scripts/raw_check.py input.nef --output raw-check.json --require-camera-wb
 python scripts/grade.py validate assets/recipes/neutral-correction.json
 python scripts/grade.py render input.jpg --recipe assets/recipes/muted-cinematic.json --output preview.png --max-size 1600
 python scripts/compare.py input.jpg preview.png --recipe assets/recipes/muted-cinematic.json --output quality.json
 python scripts/compare.py input.jpg preview.png --recipe match.json --reference reference.jpg --output quality.json
 python scripts/preview.py input.jpg --recipe assets/recipes/transformative-cool-violet.json --output-dir previews --max-size 1200
+python scripts/route_film.py "标准强度胶片感" --output film-route.json
+python scripts/route_documentary.py "经典纪实摄影调色" --output documentary-route.json
 python scripts/variants.py input.jpg --variant conservative=a.json --variant standard=b.json --variant bold=c.json --variant transformative=d.json --output-dir previews
 python scripts/variants.py input.jpg --base-recipe base.json --output-dir previews
 python scripts/search_match.py input.jpg reference.jpg --template assets/recipes/neutral-correction.json --intensity bold --output-dir match-search
@@ -125,6 +149,8 @@ For a single subjective result, `preview.py` is the preferred fast path: it prod
 For low-light scenes, start with `assets/recipes/low-light-cinematic.json`. For scenes without people, or when the heuristic mask is visibly overbroad, disable skin protection during match or batch recipe generation.
 
 Use `assets/recipes/natural-standard.json` for a believable but visibly improved natural starting point, `assets/recipes/bold-cinematic.json` for an unmistakable creative starting point, and `assets/recipes/transformative-cool-violet.json` for an explicit warm-to-pale-violet transformation.
+
+Use `assets/recipes/wabi-sabi-deep-gray.json` when the requested look calls for low exposure, deep charcoal or asphalt-gray tonal placement, restrained cool and miscellaneous colors, and comparatively warmer wood, clay, amber, red, orange, or yellow focal accents. Dark-overlay language is interpreted as a tonal target; the renderer does not composite an overlay. Keep this color-only unless the user separately and explicitly requests bounded output sharpening and the source passes texture preflight; clarity remains unsupported.
 
 For dreamlike, soft-glow, sacred-light, or hazy requests, intensity does not imply effect permission. The skill first asks whether restrained source-derived highlight diffusion is allowed. After explicit approval, `assets/recipes/soft-dream-source-glow.json` is available as a starting point. The effect only spreads light already present in the source and cannot add a light source, flare, ray, starburst, or new scene content.
 
