@@ -19,14 +19,19 @@ SKILL = ROOT / "skills" / "grade-images"
 sys.path.insert(0, str(SKILL / "scripts"))
 
 import batch as batch_script  # noqa: E402
+import batch_render as batch_render_script  # noqa: E402
 import analyze as analyze_script  # noqa: E402
+import benchmark as benchmark_script  # noqa: E402
 import compare as compare_script  # noqa: E402
+import correct as correct_script  # noqa: E402
 import grade as grade_script  # noqa: E402
 import preview as preview_script  # noqa: E402
 import raw_check as raw_check_script  # noqa: E402
 import route_documentary as route_documentary_script  # noqa: E402
 import route_film as route_film_script  # noqa: E402
+import scene as scene_script  # noqa: E402
 import variants as variants_script  # noqa: E402
+import v4 as v4_script  # noqa: E402
 from batch import derive_batch_recipes  # noqa: E402
 from compare import (  # noqa: E402
     difference_metrics,
@@ -724,6 +729,41 @@ class GradeCoreTests(unittest.TestCase):
             for recipe_path in generated:
                 self.assertFalse(json.loads(recipe_path.read_text())["protection"]["skin"]["enabled"])
 
+    def test_batch_render_is_ordered_deterministic_and_flags_exposure_outlier(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            inputs = []
+            for index, level in enumerate((90, 94, 98, 102, 106, 18)):
+                path = root / f"image-{index:02d}.png"
+                Image.new("RGB", (64, 48), (level, level + 4, level + 8)).save(path)
+                inputs.append(path)
+            first = batch_render_script.render_batch(
+                inputs,
+                self.natural_path,
+                root / "first",
+                workers=2,
+                max_size=64,
+                disable_skin_protection=True,
+            )
+            second = batch_render_script.render_batch(
+                inputs,
+                self.natural_path,
+                root / "second",
+                workers=2,
+                max_size=64,
+                disable_skin_protection=True,
+            )
+            self.assertTrue(first["all_looks_identical"])
+            self.assertTrue(first["output_order_deterministic"])
+            self.assertEqual(
+                [item["output_pixel_sha256"] for item in first["images"]],
+                [item["output_pixel_sha256"] for item in second["images"]],
+            )
+            self.assertTrue(first["images"][-1]["is_outlier"])
+            self.assertIn("correction_exposure", first["images"][-1]["outlier_reasons"])
+            self.assertGreater(first["throughput_images_per_second"], 0.0)
+            self.assertGreater(first["estimated_peak_array_bytes"], 0)
+
     def test_embedded_profile_is_converted_and_output_is_tagged_srgb(self) -> None:
         recipe = load_recipe(self.neutral_path)
         profile = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
@@ -928,9 +968,166 @@ class GradeCoreTests(unittest.TestCase):
             self.assertTrue(Path(manifest["quality_report"]).is_file())
             self.assertTrue(Path(manifest["recipe"]).is_file())
             self.assertGreaterEqual(manifest["timing_seconds"]["total"], 0.0)
+            for stage in (
+                "preview_encode",
+                "quality_analysis",
+                "comparison_sheet",
+                "artifact_writes",
+                "parallel_artifacts_wall",
+            ):
+                self.assertGreaterEqual(manifest["timing_seconds"][stage], 0.0)
             report = json.loads(Path(manifest["quality_report"]).read_text(encoding="utf-8"))
             self.assertIn("difference", report)
             self.assertIn("target_match", report)
+
+    def test_preview_benchmark_records_reproducible_context_and_percentiles(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.png"
+            output_dir = root / "benchmark"
+            pixels = np.linspace(0.0, 1.0, 64 * 48 * 3, dtype=np.float32).reshape(48, 64, 3)
+            Image.fromarray(np.uint8(np.round(pixels * 255.0)), mode="RGB").save(source)
+            report = benchmark_script.run_benchmark(
+                source,
+                self.natural_path,
+                output_dir,
+                runs=3,
+                warmup=0,
+                max_size=64,
+            )
+            self.assertEqual(report["measured_runs"], 3)
+            self.assertEqual(len(report["runs"]), 3)
+            self.assertGreaterEqual(report["summary_seconds"]["p50_total"], 0.0)
+            self.assertGreaterEqual(report["summary_seconds"]["p95_total"], 0.0)
+            self.assertTrue(Path(report["report"]).is_file())
+
+    def test_scene_gate_disables_warm_no_people_cases(self) -> None:
+        cases = {
+            "brick": np.full((96, 128, 3), [0.58, 0.32, 0.20], dtype=np.float32),
+            "wood": np.tile(np.linspace([0.72, 0.47, 0.26], [0.30, 0.13, 0.07], 128), (96, 1, 1)).astype(np.float32),
+            "sunset": np.tile(np.linspace([0.92, 0.68, 0.34], [0.25, 0.15, 0.10], 96)[:, None, :], (1, 128, 1)).astype(np.float32),
+            "earth": np.full((96, 128, 3), [0.48, 0.36, 0.24], dtype=np.float32),
+            "neutral": np.full((96, 128, 3), 0.45, dtype=np.float32),
+        }
+        for name, pixels in cases.items():
+            with self.subTest(name=name):
+                evidence = scene_script.scene_evidence(pixels)
+                gate = scene_script.skin_protection_gate(evidence, "absent")
+                self.assertEqual(gate["decision"], "disable")
+                self.assertFalse(gate["recommended_enabled"])
+
+    def test_scene_gate_enables_bounded_candidate_only_with_people_evidence(self) -> None:
+        pixels = np.full((100, 140, 3), [0.22, 0.28, 0.34], dtype=np.float32)
+        pixels[25:70, 50:90] = [0.76, 0.53, 0.39]
+        evidence = scene_script.scene_evidence(pixels)
+        unknown = scene_script.skin_protection_gate(evidence, "unknown")
+        present = scene_script.skin_protection_gate(evidence, "present")
+        self.assertEqual(unknown["decision"], "review")
+        self.assertEqual(present["decision"], "enable")
+        self.assertTrue(present["recommended_enabled"])
+
+    def test_intent_record_keeps_effect_and_texture_permission_separate(self) -> None:
+        pixels = np.full((48, 64, 3), [0.3, 0.35, 0.4], dtype=np.float32)
+        measurements = analyze_script.analyze_array(pixels)
+        evidence = scene_script.scene_evidence(pixels)
+        record = scene_script.build_intent_record(
+            "大胆电影感与梦幻柔光",
+            measurements,
+            evidence,
+            "absent",
+        )
+        self.assertEqual(record["intent"]["intensity"]["value"], "bold")
+        self.assertIn("cinematic", record["intent"]["styles"]["value"])
+        self.assertTrue(record["intent"]["effects"]["cues"])
+        self.assertFalse(record["intent"]["effects"]["permission"])
+        self.assertFalse(record["intent"]["texture"]["permission"])
+
+    def test_correction_warning_map_and_candidate_bounds(self) -> None:
+        report = {
+            "warnings": [
+                "bold strategy did not produce a clearly strong visual delta; strengthen or explain the limit",
+                "near-black pixels increased by more than 2 percentage points; review shadow detail",
+            ]
+        }
+        causes = correct_script.classify_warnings(report)
+        self.assertEqual(causes, ["intent_underpowered", "shadow_crush"])
+        recipe = load_recipe(self.bold_path)
+        candidates = correct_script.bounded_candidates(recipe, causes)
+        self.assertEqual(len(candidates), 16)
+        for _, candidate, adjustment in candidates:
+            self.assertEqual(candidate["correction"]["exposure_ev"], recipe["correction"]["exposure_ev"])
+            self.assertEqual(candidate["preservation"], recipe["preservation"])
+            self.assertEqual(candidate.get("effects"), recipe.get("effects"))
+            self.assertEqual(candidate.get("texture"), recipe.get("texture"))
+            self.assertEqual(candidate["correction"]["black_point"], 0.0)
+            self.assertIn(adjustment["creative_color_factor"], {4.0, 6.0, 7.0, 8.0})
+
+    def test_correction_stops_on_unmapped_or_structural_warning(self) -> None:
+        recipe = load_recipe(self.bold_path)
+        self.assertEqual(correct_script.bounded_candidates(recipe, ["unmapped"]), [])
+        self.assertEqual(correct_script.bounded_candidates(recipe, ["structure_change"]), [])
+
+    def test_low_light_correction_decouples_color_separation_from_saturation(self) -> None:
+        recipe = load_recipe(self.bold_path)
+        candidates = correct_script.bounded_candidates(
+            recipe,
+            ["intent_underpowered", "shadow_crush"],
+            source_near_black=0.15,
+        )
+        self.assertEqual(len(candidates), 18)
+        self.assertEqual({item[2]["global_saturation"] for item in candidates}, {0.55, 0.65, 0.75})
+        self.assertEqual({item[2]["tone_curve_strength"] for item in candidates}, {-0.5, -0.4})
+        self.assertEqual({item[2]["creative_color_factor"] for item in candidates}, {6.0, 7.0, 8.0})
+
+    def test_v4_ir_evidence_and_render_graph_are_deterministic(self) -> None:
+        pixels = np.full((48, 64, 3), [0.25, 0.32, 0.42], dtype=np.float32)
+        measurements = analyze_script.analyze_array(pixels)
+        evidence = scene_script.scene_evidence(pixels)
+        intent = v4_script.build_intent_ir("大胆电影感，不增加光效或锐化", measurements, evidence, "absent")
+        first = v4_script.build_evidence_graph(measurements, evidence, intent)
+        second = v4_script.build_evidence_graph(measurements, evidence, intent)
+        self.assertEqual(intent["schema_version"], "2.0")
+        self.assertFalse(intent["constraints"]["effect_permission"])
+        self.assertFalse(intent["constraints"]["texture_permission"])
+        self.assertEqual(first["graph_sha256"], second["graph_sha256"])
+
+    def test_v4_compiled_graph_preserves_legacy_pixel_math_for_all_presets(self) -> None:
+        pixels = np.linspace(0.05, 0.9, 36 * 48 * 3, dtype=np.float32).reshape(36, 48, 3)
+        measurements = analyze_script.analyze_array(pixels)
+        evidence = scene_script.scene_evidence(pixels)
+        intent = v4_script.build_intent_ir("标准调色", measurements, evidence, "absent")
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "source.png"
+            Image.fromarray(np.uint8(np.round(pixels * 255.0)), mode="RGB").save(source)
+            for recipe_path in sorted((SKILL / "assets" / "recipes").glob("*.json")):
+                with self.subTest(recipe=recipe_path.name):
+                    recipe = load_recipe(recipe_path)
+                    recipe.setdefault("protection", {}).setdefault("skin", {})["enabled"] = False
+                    graph = v4_script.compile_render_graph(source, recipe, intent)
+                    legacy, _ = render_array(pixels, recipe)
+                    compiled, _ = v4_script.execute_render_graph(pixels, graph)
+                    self.assertEqual(tuple(node["id"] for node in graph["nodes"]), v4_script.GRAPH_ORDER)
+                    self.assertTrue(graph["deterministic"])
+                    self.assertTrue(np.array_equal(legacy, compiled))
+
+    def test_correction_route_hash_mismatch_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.png"
+            route = root / "route.json"
+            Image.new("RGB", (64, 48), (80, 90, 100)).save(source)
+            route.write_text(json.dumps({
+                "input_sha256": "not-the-source-hash",
+                "routing": {"skin_protection": {"decision": "disable"}},
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "route input hash"):
+                correct_script.run_correction(
+                    source,
+                    self.bold_path,
+                    root / "out",
+                    max_size=64,
+                    route_path=route,
+                )
 
     def test_automatic_intensity_variants_scale_only_the_creative_look(self) -> None:
         base = load_recipe(self.bold_path)
