@@ -94,6 +94,12 @@ with the Python, Pillow, NumPy, platform, input hash, and recipe hash. Compare
 runs from the same machine and image dimensions. Do not treat a single run or a
 test-suite duration as a release performance claim.
 
+The fast preview bundle renders and encodes at the requested preview size, but
+may evaluate preview-only distribution and structural gates on a deterministic
+512px 8-bit sample. The report must record `analysis_resolution` and require a
+full-size `compare.py` verification for final delivery or acceptance. Bounded
+correction continues to evaluate its candidates at the requested working size.
+
 - Establish the previous release baseline before changing renderer behavior.
 - Keep structural and intent-match results separate.
 - Treat a direction that improves while its reverse regresses as a failed bidirectional change.

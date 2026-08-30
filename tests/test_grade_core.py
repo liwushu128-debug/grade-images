@@ -979,6 +979,8 @@ class GradeCoreTests(unittest.TestCase):
             report = json.loads(Path(manifest["quality_report"]).read_text(encoding="utf-8"))
             self.assertIn("difference", report)
             self.assertIn("target_match", report)
+            self.assertEqual(report["analysis_resolution"]["max_size"], 512)
+            self.assertTrue(report["analysis_resolution"]["final_verification_required"])
 
     def test_preview_benchmark_records_reproducible_context_and_percentiles(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1073,11 +1075,25 @@ class GradeCoreTests(unittest.TestCase):
             recipe,
             ["intent_underpowered", "shadow_crush"],
             source_near_black=0.15,
+            source_extreme_saturation=0.0,
         )
         self.assertEqual(len(candidates), 18)
         self.assertEqual({item[2]["global_saturation"] for item in candidates}, {0.55, 0.65, 0.75})
         self.assertEqual({item[2]["tone_curve_strength"] for item in candidates}, {-0.5, -0.4})
         self.assertEqual({item[2]["creative_color_factor"] for item in candidates}, {6.0, 7.0, 8.0})
+
+    def test_chroma_sensitive_correction_uses_restrained_bounded_bracket(self) -> None:
+        recipe = load_recipe(self.bold_path)
+        candidates = correct_script.bounded_candidates(
+            recipe,
+            ["intent_underpowered", "shadow_crush"],
+            source_near_black=0.08,
+            source_extreme_saturation=0.12,
+        )
+        self.assertEqual(len(candidates), 12)
+        self.assertEqual({item[2]["global_saturation"] for item in candidates}, {0.45, 0.55, 0.65})
+        self.assertEqual({item[2]["tone_curve_strength"] for item in candidates}, {-0.2, 0.0})
+        self.assertEqual({item[2]["creative_color_factor"] for item in candidates}, {4.0, 6.0})
 
     def test_v4_ir_evidence_and_render_graph_are_deterministic(self) -> None:
         pixels = np.full((48, 64, 3), [0.25, 0.32, 0.42], dtype=np.float32)

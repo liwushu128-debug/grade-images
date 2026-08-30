@@ -8,6 +8,9 @@ import shutil
 import time
 from pathlib import Path
 
+import numpy as np
+from PIL import Image
+
 from compare import (
     difference_metrics,
     gradient_metrics,
@@ -35,6 +38,20 @@ REFERENCE_REQUIREMENTS = {
     "bold": 0.60,
     "transformative": 0.75,
 }
+
+PREVIEW_GATE_MAX_SIZE = 512
+
+
+def _preview_gate_sample(array: np.ndarray, max_size: int = PREVIEW_GATE_MAX_SIZE) -> np.ndarray:
+    """Build a deterministic 8-bit sample for preview-only quality gating."""
+    height, width = array.shape[:2]
+    if max(height, width) <= max_size:
+        return array
+    scale = max_size / max(height, width)
+    size = (max(1, round(width * scale)), max(1, round(height * scale)))
+    image = Image.fromarray(np.uint8(np.round(np.clip(array, 0.0, 1.0) * 255.0)), mode="RGB")
+    sampled = image.resize(size, Image.Resampling.BILINEAR)
+    return np.asarray(sampled, dtype=np.float32) / 255.0
 
 
 def _quality_report(
@@ -168,9 +185,14 @@ def render_preview(
             strategy.get("style", "Custom"),
         )
     )
-    panels = [("Original", source), (display_label, result)]
-    if reference is not None:
-        panels.append(("Reference", reference))
+    gate_source = _preview_gate_sample(source)
+    gate_result = _preview_gate_sample(result)
+    gate_reference = _preview_gate_sample(reference) if reference is not None else None
+    # The contact sheet is a fit-to-screen direction aid; retain the full-size
+    # individual preview for 100% inspection and reuse the gate samples here.
+    panels = [("Original", gate_source), (display_label, gate_result)]
+    if gate_reference is not None:
+        panels.append(("Reference", gate_reference))
 
     artifact_started = time.perf_counter()
     stage_seconds: dict[str, float] = {}
@@ -182,7 +204,14 @@ def render_preview(
 
     def analyze_quality() -> dict:
         stage_started = time.perf_counter()
-        value = _quality_report(source, result, recipe, reference=reference)
+        value = _quality_report(gate_source, gate_result, recipe, reference=gate_reference)
+        value["analysis_resolution"] = {
+            "mode": "deterministic-preview-sample",
+            "source": [int(gate_source.shape[1]), int(gate_source.shape[0])],
+            "max_size": PREVIEW_GATE_MAX_SIZE,
+            "comparison_sheet_uses_same_sample": True,
+            "final_verification_required": True,
+        }
         stage_seconds["quality_analysis"] = time.perf_counter() - stage_started
         return value
 
@@ -193,20 +222,22 @@ def render_preview(
 
     # These jobs read immutable arrays and write distinct files. Parallelizing
     # them changes latency only; rendered pixels and quality math stay stable.
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=4) as executor:
         preview_future = executor.submit(save_preview)
         report_future = executor.submit(analyze_quality)
         sheet_future = executor.submit(save_sheet)
+        unchanged_future = executor.submit(sha256_file, input_path)
         preview_future.result()
         report = report_future.result()
         sheet_future.result()
+        unchanged_hash = unchanged_future.result()
 
     write_started = time.perf_counter()
     shutil.copyfile(recipe_path, recipe_copy)
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     stage_seconds["artifact_writes"] = time.perf_counter() - write_started
     artifact_elapsed = time.perf_counter() - artifact_started
-    if sha256_file(input_path) != source_hash:
+    if unchanged_hash != source_hash:
         raise RuntimeError("source file changed during preview rendering")
 
     manifest = {

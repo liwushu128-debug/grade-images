@@ -74,21 +74,40 @@ def bounded_candidates(
     causes: list[str],
     *,
     source_near_black: float | None = None,
+    source_extreme_saturation: float | None = None,
 ) -> list[tuple[str, dict[str, Any], dict[str, Any]]]:
     if "unmapped" in causes or any(cause in causes for cause in ("structure_change", "highlight_clipping")):
         return []
     # A source can be visibly low-key before the generic 20% warning threshold;
     # use the safer low-light bracket once the source has a substantial dark field.
+    adaptive = source_near_black is not None and source_extreme_saturation is not None
     low_light = source_near_black is not None and source_near_black > 0.12
+    chroma_sensitive = (
+        source_extreme_saturation is not None and source_extreme_saturation > 0.05
+    )
     shadow_values = [None]
     if "shadow_crush" in causes:
-        shadow_values = [-0.4, -0.5] if low_light else [0.0, 0.05, 0.10, 0.15]
+        if not adaptive:
+            shadow_values = [0.0, 0.05, 0.10, 0.15]
+        elif low_light:
+            shadow_values = [-0.4, -0.5]
+        elif "intent_underpowered" in causes:
+            shadow_values = [0.0, -0.2] if chroma_sensitive else [-0.5, -0.6, -0.7]
+        else:
+            shadow_values = [0.0, 0.05, 0.10, 0.15]
     color_factors = [1.0]
     if "intent_underpowered" in causes:
         color_factors = [6.0, 7.0, 8.0] if low_light else [4.0, 6.0, 7.0, 8.0]
     saturation_values: list[float | None] = [None]
-    if low_light and "intent_underpowered" in causes and "saturation" in recipe.get("look", {}):
-        saturation_values = [0.75, 0.65, 0.55]
+    if adaptive and "intent_underpowered" in causes and "saturation" in recipe.get("look", {}):
+        if low_light:
+            saturation_values = [0.75, 0.65, 0.55]
+        elif chroma_sensitive:
+            saturation_values = [0.65, 0.55, 0.45]
+            color_factors = [4.0, 6.0]
+        elif "shadow_crush" in causes:
+            saturation_values = [0.75, 0.65, 0.55, 0.45]
+            color_factors = [4.0, 8.0]
     candidates = []
     for tone in shadow_values:
         for factor in color_factors:
@@ -175,10 +194,12 @@ def run_correction(
 
     if initial_report["warnings"]:
         source_near_black = initial_report["source"]["clipping"]["near_black_fraction"]
+        source_extreme_saturation = initial_report["source"]["saturation"]["extreme_fraction"]
         for label, candidate, adjustment in bounded_candidates(
             initial_recipe,
             causes,
             source_near_black=source_near_black,
+            source_extreme_saturation=source_extreme_saturation,
         ):
             result, diagnostics = render_array(source, candidate)
             report = _quality_report(source, result, candidate)
