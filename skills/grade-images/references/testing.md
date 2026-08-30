@@ -82,6 +82,18 @@ Select the lowest reference-distribution distance among candidates that pass cli
 
 ## Regression discipline
 
+For repeatable end-to-end preview benchmarks, run:
+
+```text
+python scripts/benchmark.py INPUT --recipe RECIPE.json \
+  --output-dir benchmark-results --runs 7 --warmup 1 --max-size 1200
+```
+
+Use the generated `benchmark.json` to report P50 and P95 total latency together
+with the Python, Pillow, NumPy, platform, input hash, and recipe hash. Compare
+runs from the same machine and image dimensions. Do not treat a single run or a
+test-suite duration as a release performance claim.
+
 - Establish the previous release baseline before changing renderer behavior.
 - Keep structural and intent-match results separate.
 - Treat a direction that improves while its reverse regresses as a failed bidirectional change.

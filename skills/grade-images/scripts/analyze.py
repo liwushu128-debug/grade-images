@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from grade_core import analyze_array, load_image, sha256_file
+from scene import scene_evidence
 
 
 def main() -> int:
@@ -32,6 +33,7 @@ def main() -> int:
                 "raw_development": metadata.get("raw_development"),
                 "warnings": metadata["warnings"],
                 "measurements": analyze_array(rgb),
+                "scene_evidence": scene_evidence(rgb),
             }
         )
     args.output.parent.mkdir(parents=True, exist_ok=True)

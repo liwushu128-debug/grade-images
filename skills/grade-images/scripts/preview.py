@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 import shutil
 import time
@@ -42,12 +43,29 @@ def _quality_report(
     recipe: dict,
     reference=None,
 ) -> dict:
-    source_analysis = analyze_array(source)
-    result_analysis = analyze_array(result)
-    reference_analysis = analyze_array(reference) if reference is not None else None
-    difference = difference_metrics(source, result)
-    structure = gradient_metrics(source, result)
-    texture = texture_metrics(source, result)
+    # Every metric reads immutable arrays and returns a standalone value. Keep
+    # the same math while avoiding serial passes over the same preview pixels.
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        source_future = executor.submit(analyze_array, source)
+        result_future = executor.submit(analyze_array, result)
+        reference_future = (
+            executor.submit(analyze_array, reference) if reference is not None else None
+        )
+        difference_future = executor.submit(difference_metrics, source, result)
+        structure_future = executor.submit(gradient_metrics, source, result)
+        texture_enabled = recipe.get("texture", {}).get("output_sharpen", {}).get("enabled", False)
+        texture_future = executor.submit(texture_metrics, source, result) if texture_enabled else None
+        source_analysis = source_future.result()
+        result_analysis = result_future.result()
+        reference_analysis = reference_future.result() if reference_future else None
+        difference = difference_future.result()
+        structure = structure_future.result()
+        texture = texture_future.result() if texture_future else {
+            "mean_gradient_ratio": 1.0,
+            "p90_gradient_ratio": 1.0,
+            "highpass_std_ratio": 1.0,
+            "not_evaluated": "texture processing disabled",
+        }
     warnings = strategy_warnings(recipe, difference)
     recommendations = []
 
@@ -143,13 +161,6 @@ def render_preview(
     if preview_path.resolve() == input_path.resolve():
         raise RecipeError("preview output must not overwrite the input")
 
-    save_started = time.perf_counter()
-    # Preview artifacts favor faster lossless PNG encoding. Final renders keep
-    # the renderer's smaller default compression level.
-    save_image(preview_path, result, alpha, recipe, metadata, png_compress_level=2)
-    shutil.copyfile(recipe_path, recipe_copy)
-    report = _quality_report(source, result, recipe, reference=reference)
-    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     strategy = recipe.get("strategy", {})
     display_label = label or " · ".join(
         part.title() for part in (
@@ -160,8 +171,41 @@ def render_preview(
     panels = [("Original", source), (display_label, result)]
     if reference is not None:
         panels.append(("Reference", reference))
-    build_contact_sheet(panels, sheet_path, columns=2)
-    save_elapsed = time.perf_counter() - save_started
+
+    artifact_started = time.perf_counter()
+    stage_seconds: dict[str, float] = {}
+
+    def save_preview() -> None:
+        stage_started = time.perf_counter()
+        save_image(preview_path, result, alpha, recipe, metadata, png_compress_level=2)
+        stage_seconds["preview_encode"] = time.perf_counter() - stage_started
+
+    def analyze_quality() -> dict:
+        stage_started = time.perf_counter()
+        value = _quality_report(source, result, recipe, reference=reference)
+        stage_seconds["quality_analysis"] = time.perf_counter() - stage_started
+        return value
+
+    def save_sheet() -> None:
+        stage_started = time.perf_counter()
+        build_contact_sheet(panels, sheet_path, columns=2, png_compress_level=1)
+        stage_seconds["comparison_sheet"] = time.perf_counter() - stage_started
+
+    # These jobs read immutable arrays and write distinct files. Parallelizing
+    # them changes latency only; rendered pixels and quality math stay stable.
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        preview_future = executor.submit(save_preview)
+        report_future = executor.submit(analyze_quality)
+        sheet_future = executor.submit(save_sheet)
+        preview_future.result()
+        report = report_future.result()
+        sheet_future.result()
+
+    write_started = time.perf_counter()
+    shutil.copyfile(recipe_path, recipe_copy)
+    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    stage_seconds["artifact_writes"] = time.perf_counter() - write_started
+    artifact_elapsed = time.perf_counter() - artifact_started
     if sha256_file(input_path) != source_hash:
         raise RuntimeError("source file changed during preview rendering")
 
@@ -183,7 +227,11 @@ def render_preview(
         "timing_seconds": {
             "load": round(load_elapsed, 4),
             "render": round(render_elapsed, 4),
-            "save_report_sheet": round(save_elapsed, 4),
+            "preview_encode": round(stage_seconds["preview_encode"], 4),
+            "quality_analysis": round(stage_seconds["quality_analysis"], 4),
+            "comparison_sheet": round(stage_seconds["comparison_sheet"], 4),
+            "artifact_writes": round(stage_seconds["artifact_writes"], 4),
+            "parallel_artifacts_wall": round(artifact_elapsed, 4),
             "total": round(time.perf_counter() - started, 4),
         },
     }

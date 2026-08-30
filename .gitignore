@@ -10,3 +10,8 @@ dist/
 .validation-deps/
 .validator-libs/
 .validator-runtime/
+.bench/
+.semantic/
+.correction/
+.batch/
+.v4/

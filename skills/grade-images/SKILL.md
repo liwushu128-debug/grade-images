@@ -27,6 +27,14 @@ Read [preservation.md](references/preservation.md) before rendering. Read [recip
 
 Read [texture-refinement.md](references/texture-refinement.md) whenever the user explicitly requests sharpening, output sharpening, or texture refinement. Do not read a reference image as permission for texture processing.
 
+Read [semantic-routing.md](references/semantic-routing.md) before enabling skin protection in a warm scene, or whenever people presence is uncertain. Run `scripts/route_scene.py` with visually established people evidence and keep effect cues separate from permission.
+
+Read [bounded-correction.md](references/bounded-correction.md) when a preview fails mapped quality or intent gates and a deterministic correction attempt is appropriate. Keep its budget at two rounds and stop for review on unmapped, structural, or unresolved warnings.
+
+Read [batch-consistency.md](references/batch-consistency.md) before rendering a reviewed look across a set. Use bounded workers, require deterministic order and one shared look hash, and review correction and output-distribution outliers separately.
+
+Read [v4-architecture.md](references/v4-architecture.md) when using the v0.4.0 intent IR, evidence graph, compiled render graph, or closed-loop controller. Keep the versioned graph artifacts beside the recipe and report.
+
 Read [film-color-routing.md](references/film-color-routing.md) whenever the prompt asks for `胶片感`, `胶片风格`, a negative-film, disposable-camera, film-print, analog, or equivalent film-color look. Run `scripts/route_film.py` before selecting or authoring that look.
 
 Read [classic-documentary.md](references/classic-documentary.md) whenever the prompt asks for `经典纪实`, `纪实摄影调色`, `彩色纪实`, archival documentary, vivid documentary, or an equivalent documentary-color look. Run `scripts/route_documentary.py` before selecting or authoring that look.
@@ -82,6 +90,8 @@ python scripts/analyze.py INPUT [INPUT ...] --output analysis.json
 
 Use the measurements as evidence, not as an automatic aesthetic verdict. Inspect the images visually as well. Identify the subject, important skin tones, lighting conditions, likely neutral areas, and requested mood.
 
+When skin protection may be useful, build an auditable route record with `route_scene.py`. Pass `people-evidence present` only after visual inspection establishes that people are present; otherwise pass `absent` or `unknown`. Treat its decision as recipe-routing evidence, not semantic segmentation.
+
 For RAW, treat demosaicing, white-balance source routing, output color conversion, and automatic brightness as part of the recorded source-development contract. Keep automatic white balance and brightness disabled, review any metadata fallback warning, and inspect the neutral baseline before adding a creative look.
 
 For film-language prompts, run:
@@ -136,6 +146,15 @@ For bidirectional references, inspect the generated shadow-span, highlight-span,
 
 ### 3. Render a preview
 
+For v0.4.0 graph execution, compile the interpreted request, scene evidence, and reviewed recipe into auditable artifacts, then execute the compiled graph:
+
+```text
+python scripts/v4.py INPUT "PROMPT" --recipe RECIPE.json \
+  --people-evidence present|absent|unknown --output-dir previews --max-size 1200
+```
+
+Accept an automatically corrected output only when the v4 manifest and nested controller manifest both report `pass`. The compatibility backend must retain the legacy recipe's pixel math after explicit routing decisions are applied.
+
 For one subjective treatment, prefer the single-pass preview command. It decodes and renders once, creates the labeled original/result sheet, writes the recipe copy and quality report, and records stage timings:
 
 ```text
@@ -151,6 +170,8 @@ python scripts/grade.py render INPUT --recipe RECIPE.json --output PREVIEW.png -
 Label the preview with the selected style and intensity, then show it beside the original. For subjective or batch work, obtain confirmation before full-resolution rendering. A standard preview should be clearly different at fit-to-screen size; a bold preview should be unmistakably different; a transformative preview should clearly satisfy its must-be-obvious contract even when viewed alone. A decisive localized hue-family change may satisfy transformative even when the global mean delta is modest. Never alter exposure, contrast, or unrelated colors solely to clear a global-difference threshold. If the requested axis is still weak, strengthen that axis or explain the clipping/gamut limit. Adjust one conceptual dimension at a time.
 
 Keep preview iteration efficient. Analyze once, select or author one baseline recipe, and run `preview.py` once. Do not write an ad hoc contact-sheet script. Do not repeat render/compare cycles when the report passes and visual inspection satisfies the treatment contract. When revision is necessary, change one evidenced axis and rerun once; after two unsuccessful revisions, present alternatives or explain the limit instead of meter-chasing.
+
+For a mapped combination such as shadow crush plus an underpowered selected intensity, `scripts/correct.py` may evaluate its fixed bounded bracket in the second round. Supply the scene route when it changed skin protection. Accept the result only when the manifest status is `pass` and the final report contains no warnings.
 
 When intensity or interpretation is unresolved, render meaningful alternatives together:
 
@@ -193,6 +214,8 @@ python scripts/batch.py INPUT [INPUT ...] --look LOOK.json --strength 0.8 --outp
 ```
 
 Review `batch-manifest.json` for correction outliers before rendering. Render each image from its original file with its corresponding recipe.
+
+For a reviewed batch, `scripts/batch_render.py` can derive and render those recipes with bounded parallelism. Require `all_looks_identical` and `output_order_deterministic`, then inspect every outlier reason before accepting the set.
 
 Disable skin protection after visual inspection when the scene contains no people or the heuristic mask is overbroad. Keep it enabled only when the preview confirms useful coverage.
 

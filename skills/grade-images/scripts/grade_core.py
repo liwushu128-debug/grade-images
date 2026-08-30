@@ -369,11 +369,15 @@ def luminance(linear_rgb: np.ndarray) -> np.ndarray:
 
 
 def _apply_saturation(rgb: np.ndarray, factor: float) -> np.ndarray:
+    if math.isclose(factor, 1.0):
+        return rgb
     luma = luminance(rgb)[..., None]
     return luma + (rgb - luma) * factor
 
 
 def _apply_vibrance(rgb: np.ndarray, amount: float) -> np.ndarray:
+    if math.isclose(amount, 0.0):
+        return rgb
     maximum = np.max(np.clip(rgb, 0.0, None), axis=2)
     minimum = np.min(np.clip(rgb, 0.0, None), axis=2)
     saturation = np.zeros_like(maximum)
